@@ -6,6 +6,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <BLEDevice.h>
+#include <BLE2902.h>
 #include <TinyGsmClient.h>
 #include <RCSwitch.h>
 #include <nvs_flash.h>
