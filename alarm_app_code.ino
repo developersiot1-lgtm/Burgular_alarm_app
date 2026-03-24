@@ -179,8 +179,70 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
     payload.trim();
     Serial.printf("[BLE] RX raw text: %s\n", payload.c_str());
 
+    String cmd;
     String ssid;
     String password;
+    String pairType;
+    String pairName;
+    String pairZone;
+    String pairId;
+
+    int cmdKey = payload.indexOf("\"cmd\"");
+    if (cmdKey >= 0) {
+      int cmdColon = payload.indexOf(':', cmdKey);
+      int cmdQ1 = payload.indexOf('"', cmdColon + 1);
+      int cmdQ2 = payload.indexOf('"', cmdQ1 + 1);
+      if (cmdColon >= 0 && cmdQ1 >= 0 && cmdQ2 > cmdQ1) {
+        cmd = payload.substring(cmdQ1 + 1, cmdQ2);
+      }
+    }
+
+    if (cmd == "pair_request") {
+      int typeKey = payload.indexOf("\"type\"");
+      int nameKey = payload.indexOf("\"name\"");
+      int zoneKey = payload.indexOf("\"zone\"");
+      int pairingIdKey = payload.indexOf("\"pairing_id\"");
+
+      if (typeKey >= 0) {
+        int colon = payload.indexOf(':', typeKey);
+        int q1 = payload.indexOf('"', colon + 1);
+        int q2 = payload.indexOf('"', q1 + 1);
+        if (colon >= 0 && q1 >= 0 && q2 > q1) pairType = payload.substring(q1 + 1, q2);
+      }
+      if (nameKey >= 0) {
+        int colon = payload.indexOf(':', nameKey);
+        int q1 = payload.indexOf('"', colon + 1);
+        int q2 = payload.indexOf('"', q1 + 1);
+        if (colon >= 0 && q1 >= 0 && q2 > q1) pairName = payload.substring(q1 + 1, q2);
+      }
+      if (zoneKey >= 0) {
+        int colon = payload.indexOf(':', zoneKey);
+        int q1 = payload.indexOf('"', colon + 1);
+        int q2 = payload.indexOf('"', q1 + 1);
+        if (colon >= 0 && q1 >= 0 && q2 > q1) pairZone = payload.substring(q1 + 1, q2);
+      }
+      if (pairingIdKey >= 0) {
+        int colon = payload.indexOf(':', pairingIdKey);
+        int end = payload.indexOf(',', colon + 1);
+        if (end < 0) end = payload.indexOf('}', colon + 1);
+        if (colon >= 0 && end > colon) pairId = payload.substring(colon + 1, end);
+        pairId.trim();
+      }
+
+      Serial.println("[BLE] Pair request received");
+      Serial.printf("[BLE] Pair type=%s\n", pairType.c_str());
+      Serial.printf("[BLE] Pair name=%s\n", pairName.c_str());
+      Serial.printf("[BLE] Pair zone=%s\n", pairZone.c_str());
+      Serial.printf("[BLE] Pair pairing_id=%s\n", pairId.c_str());
+
+      if (wifiTxCharacteristic) {
+        String ack = "{\"type\":\"sensor_ack\",\"status\":\"pairing_started\",\"pairing_id\":" + (pairId.length() ? pairId : "0") + ",\"mac\":\"" + WiFi.macAddress() + "\",\"ble_name\":\"" + String(BLE_DEVICE_NAME) + "\"}";
+        wifiTxCharacteristic->setValue(ack.c_str());
+        wifiTxCharacteristic->notify();
+        Serial.printf("[BLE] TX notify: %s\n", ack.c_str());
+      }
+      return;
+    }
 
     int ssidKey = payload.indexOf("\"ssid\"");
     int passKey = payload.indexOf("\"password\"");
