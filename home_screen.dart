@@ -940,6 +940,7 @@ class _PairingDialogState extends State<_PairingDialog> {
   String? _pairedMac;
   String? _pairedBleName;
   int?    _pairingId;
+  bool    _hubAckOnly = false;
 
   Timer?                                _timer;
   StreamSubscription<List<ScanResult>>? _scanSub;
@@ -961,6 +962,73 @@ class _PairingDialogState extends State<_PairingDialog> {
   // ===========================================================================
   // STEP 1 — POST pairing record to server
   // ===========================================================================
+  bool _looksLikeHubResult(ScanResult result) {
+    final advName = result.device.platformName.isNotEmpty
+        ? result.device.platformName
+        : result.advertisementData.advName;
+    if (advName.toLowerCase().contains('esp32_alarm_setup')) {
+      return true;
+    }
+
+    for (final serviceUuid in result.advertisementData.serviceUuids) {
+      if (serviceUuid.toString().toLowerCase() == _svcUuid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<bool> _connectToHubBle() async {
+    try {
+      await _scanSub?.cancel();
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+
+    _triedConnect = false;
+    final completer = Completer<bool>();
+
+    try {
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+    } catch (e) {
+      print('?? Hub BLE scan start failed: $e');
+      return false;
+    }
+
+    _scanSub = FlutterBluePlus.scanResults.listen((results) async {
+      if (!_isPairing || _pairingDone || _triedConnect || completer.isCompleted) {
+        return;
+      }
+
+      for (final r in results) {
+        if (_triedConnect || _pairingDone || completer.isCompleted) break;
+        if (!_looksLikeHubResult(r)) continue;
+
+        final advName = r.device.platformName.isNotEmpty
+            ? r.device.platformName
+            : r.advertisementData.advName;
+
+        _triedConnect = true;
+        if (mounted) {
+          setState(() => _statusMsg = 'Found hub "$advName" - connecting...');
+        }
+
+        final ok = await _tryConnectAndVerify(r.device, advName);
+        if (!completer.isCompleted) {
+          completer.complete(ok);
+        }
+        break;
+      }
+    });
+
+    try {
+      return await completer.future.timeout(const Duration(seconds: 12), onTimeout: () => false);
+    } finally {
+      try {
+        await _scanSub?.cancel();
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
+    }
+  }
   Future<int?> _createServerPairingRecord(String tempUuid) async {
     if (widget.apiService == null || widget.hubDeviceUuid.isEmpty) return null;
     try {
@@ -1026,13 +1094,7 @@ class _PairingDialogState extends State<_PairingDialog> {
           : 'Scanning for ${_sensorLabel()}…');
     }
 
-    // ── STEP 3: BLE scan ─────────────────────────────────────────────────────
-    try {
-      await FlutterBluePlus.startScan(timeout: Duration(seconds: _totalSec));
-    } catch (e) {
-      print('⚠️ BLE scan start: $e');
-    }
-
+    // STEP 3: Send pair_request to hub BLE
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
@@ -1043,28 +1105,14 @@ class _PairingDialogState extends State<_PairingDialog> {
       }
     });
 
-    await _scanSub?.cancel();
-    _scanSub = FlutterBluePlus.scanResults.listen((results) async {
-      if (!_isPairing || _pairingDone || _triedConnect) return;
-      for (final r in results) {
-        if (_triedConnect || _pairingDone) break;
-        final advName = r.device.platformName.isNotEmpty
-            ? r.device.platformName
-            : r.advertisementData.advName;
-        if (advName.isEmpty) continue;
+    if (mounted) {
+      setState(() => _statusMsg = 'Connecting to hub Bluetooth...');
+    }
 
-        _triedConnect = true;
-        if (mounted) setState(() => _statusMsg = 'Found "$advName" — connecting…');
-
-        final ok = await _tryConnectAndVerify(r.device, advName);
-        if (!ok) {
-          _triedConnect = false;
-          if (mounted) {
-            setState(() => _statusMsg = '"$advName" not a sensor — still scanning…');
-          }
-        }
-      }
-    });
+    final hubBleOk = await _connectToHubBle();
+    if (!hubBleOk && mounted && !_pairingDone) {
+      setState(() => _statusMsg = 'Hub Bluetooth not reachable - still waiting...');
+    }
   }
 
   // ===========================================================================
@@ -1222,6 +1270,7 @@ class _PairingDialogState extends State<_PairingDialog> {
       String? sensorMac;
       String? sensorBle;
 
+      _hubAckOnly = false;
       if (notifyChar != null) {
         try {
           final raw = await notifyChar.lastValueStream
@@ -1229,16 +1278,21 @@ class _PairingDialogState extends State<_PairingDialog> {
               .first
               .timeout(const Duration(seconds: 8));
           final ack = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
-          if (ack['type'] == 'sensor_ack') {
-            ackOk     = true;
-            sensorMac = ack['mac']?.toString();
-            sensorBle = ack['ble_name']?.toString();
+          final ackType = ack['type']?.toString();
+          final ackStatus = ack['status']?.toString() ?? '';
+          if (ackType == 'sensor_ack' && ackStatus.isNotEmpty) {
+            ackOk = true;
+            _hubAckOnly = ackStatus != 'paired';
+            if (!_hubAckOnly) {
+              sensorMac = ack['mac']?.toString();
+              sensorBle = ack['ble_name']?.toString();
+            }
+            print('? Hub BLE ack: $ack');
           }
-        } catch (_) {
-          ackOk = true; // treat no-ack as success
+        } catch (e) {
+          print('?? No sensor_ack from hub: $e');
+          ackOk = false;
         }
-      } else {
-        ackOk = true;
       }
 
       if (!ackOk) {
@@ -1270,7 +1324,9 @@ class _PairingDialogState extends State<_PairingDialog> {
       _pairingDone    = true;
       _pairingSuccess = success;
       _statusMsg = success
-          ? 'Sensor paired via Bluetooth!'
+          ? (_hubAckOnly
+              ? 'Hub accepted pairing request.'
+              : 'Sensor paired via Bluetooth!')
           : reason == 'timeout'
           ? 'No sensor found within $_totalSec seconds.\n\n'
           'Make sure the sensor is:\n• Powered on\n• Within Bluetooth range'
@@ -1279,7 +1335,7 @@ class _PairingDialogState extends State<_PairingDialog> {
 
     if (widget.apiService != null && _pairingId != null) {
       final newStatus =
-      success ? 'paired' : (reason == 'timeout' ? 'timeout' : 'failed');
+      success ? (_hubAckOnly ? 'pairing' : 'paired') : (reason == 'timeout' ? 'timeout' : 'failed');
       widget.apiService!
           .accessoryUpdatePairingStatus(
         pairingId:     _pairingId!,
@@ -1310,7 +1366,7 @@ class _PairingDialogState extends State<_PairingDialog> {
       type:       widget.type,
       remoteMode: widget.remoteMode,
       status:     _pairingSuccess
-          ? AccessoryStatus.paired
+          ? (_hubAckOnly ? AccessoryStatus.pairing : AccessoryStatus.paired)
           : AccessoryStatus.pairing,
       pairingId:  _pairingId,
     );
@@ -1618,3 +1674,5 @@ class _PairingDialogState extends State<_PairingDialog> {
     ];
   }
 }
+
+

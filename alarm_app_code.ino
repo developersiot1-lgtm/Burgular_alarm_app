@@ -163,6 +163,101 @@ bool wifiProvisioned = false;
 bool deviceRegistered = false;
 String provisionedSsid;
 String provisionedPassword;
+String bleJsonBuffer;
+unsigned long bleJsonBufferStartedAt = 0;
+
+bool isCompleteBleJson(const String &text) {
+  int depth = 0;
+  bool inString = false;
+  bool escapeNext = false;
+  bool sawOpen = false;
+
+  for (size_t i = 0; i < text.length(); i++) {
+    char c = text[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (inString && c == '\\') {
+      escapeNext = true;
+      continue;
+    }
+
+    if (c == '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (c == '{') {
+      depth++;
+      sawOpen = true;
+    } else if (c == '}') {
+      depth--;
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+
+  return sawOpen && !inString && depth == 0;
+}
+
+String collectBlePayload(const std::string &raw) {
+  String chunk;
+  chunk.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); i++) {
+    chunk += raw[i];
+  }
+  chunk.trim();
+
+  if (chunk.length() == 0) {
+    return "";
+  }
+
+  Serial.printf("[BLE] RX chunk: %s\n", chunk.c_str());
+
+  const bool looksLikeJsonChunk =
+      bleJsonBuffer.length() > 0 ||
+      chunk.startsWith("{") ||
+      chunk.indexOf("\"cmd\"") >= 0 ||
+      chunk.indexOf("\"ssid\"") >= 0 ||
+      chunk.indexOf("\"password\"") >= 0 ||
+      chunk.indexOf("\"type\"") >= 0 ||
+      chunk.indexOf("\"pairing_id\"") >= 0;
+
+  if (!looksLikeJsonChunk) {
+    return chunk;
+  }
+
+  if (bleJsonBuffer.length() == 0 || millis() - bleJsonBufferStartedAt > 5000) {
+    if (bleJsonBuffer.length() > 0) {
+      Serial.println("[BLE] Clearing stale BLE JSON buffer");
+    }
+    bleJsonBuffer = "";
+    bleJsonBufferStartedAt = millis();
+  }
+
+  bleJsonBuffer += chunk;
+  Serial.printf("[BLE] JSON buffer size=%u\n", static_cast<unsigned>(bleJsonBuffer.length()));
+
+  if (!isCompleteBleJson(bleJsonBuffer)) {
+    Serial.println("[BLE] Waiting for more BLE JSON chunks");
+    return "";
+  }
+
+  String fullPayload = bleJsonBuffer;
+  bleJsonBuffer = "";
+  bleJsonBufferStartedAt = 0;
+  fullPayload.trim();
+  Serial.printf("[BLE] Reassembled JSON: %s\n", fullPayload.c_str());
+  return fullPayload;
+}
 
 // -------------------------------------------------------------------
 // BLE provisioning
@@ -176,8 +271,10 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
     }
 
     Serial.printf("[BLE] RX bytes=%u\n", static_cast<unsigned>(raw.size()));
-    String payload = String(raw.c_str());
-    payload.trim();
+    String payload = collectBlePayload(raw);
+    if (payload.length() == 0) {
+      return;
+    }
     Serial.printf("[BLE] RX raw text: %s\n", payload.c_str());
 
     String cmd;
@@ -819,3 +916,4 @@ void loop() {
   updateAlarmBuzzer();
   delay(50);
 }
+
