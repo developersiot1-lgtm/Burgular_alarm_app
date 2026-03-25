@@ -80,6 +80,7 @@ static const bool CLEAR_WIFI_ON_EVERY_BOOT = true;
 // Poll interval for app/server arm-disarm state.
 static const unsigned long STATE_POLL_MS = 500;
 static const unsigned long MODEM_NETWORK_TIMEOUT_MS = 15000;
+static const unsigned long RF_PAIR_WINDOW_MS = 30000;
 
 // -------------------------------------------------------------------
 // Manual contact numbers
@@ -140,6 +141,19 @@ static const ManualRfItem RF_ITEMS[] = {
 };
 
 static const uint8_t RF_ITEM_COUNT = sizeof(RF_ITEMS) / sizeof(RF_ITEMS[0]);
+static const uint8_t MAX_LEARNED_RF_ITEMS = 16;
+static const char *PREF_LEARNED_RF_COUNT = "lrf_cnt";
+static const char *PREF_LEARNED_RF_DATA = "lrf_data";
+
+struct LearnedRfItem {
+  uint32_t code;
+  uint8_t type;
+  char name[24];
+  char zone[24];
+};
+
+LearnedRfItem learnedRfItems[MAX_LEARNED_RF_ITEMS];
+uint8_t learnedRfItemCount = 0;
 
 // -------------------------------------------------------------------
 // Runtime state
@@ -159,12 +173,19 @@ unsigned long lastWiFiAttemptAt = 0;
 bool alarmOutputsEnabled = false;
 int lastDoorZoneState[DOOR_ZONE_COUNT];
 bool bleProvisioningActive = false;
+bool bleClientConnected = false;
 bool wifiProvisioned = false;
 bool deviceRegistered = false;
 String provisionedSsid;
 String provisionedPassword;
 String bleJsonBuffer;
 unsigned long bleJsonBufferStartedAt = 0;
+bool rfPairingActive = false;
+String rfPairType;
+String rfPairName;
+String rfPairZone;
+String rfPairingId;
+unsigned long rfPairingStartedAt = 0;
 
 bool isCompleteBleJson(const String &text) {
   int depth = 0;
@@ -262,6 +283,24 @@ String collectBlePayload(const std::string &raw) {
 // -------------------------------------------------------------------
 // BLE provisioning
 // -------------------------------------------------------------------
+class ProvisioningServerCallbacks : public BLEServerCallbacks {
+ public:
+  void onConnect(BLEServer *server) override {
+    bleClientConnected = true;
+    Serial.println("[BLE] Client connected");
+  }
+
+  void onDisconnect(BLEServer *server) override {
+    bleClientConnected = false;
+    Serial.println("[BLE] Client disconnected");
+    delay(120);
+    BLEAdvertising *advertising = BLEDevice::getAdvertising();
+    advertising->addServiceUUID(BLE_SERVICE_UUID);
+    advertising->start();
+    Serial.println("[BLE] Advertising restarted after disconnect");
+  }
+};
+
 class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
     std::string raw = characteristic->getValue();
@@ -333,12 +372,13 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
       Serial.printf("[BLE] Pair zone=%s\n", pairZone.c_str());
       Serial.printf("[BLE] Pair pairing_id=%s\n", pairId.c_str());
 
-      if (wifiTxCharacteristic) {
-        String ack = "{\"type\":\"sensor_ack\",\"status\":\"pairing_started\",\"pairing_id\":" + (pairId.length() ? pairId : "0") + ",\"mac\":\"" + WiFi.macAddress() + "\",\"ble_name\":\"" + String(BLE_DEVICE_NAME) + "\"}";
-        wifiTxCharacteristic->setValue(ack.c_str());
-        wifiTxCharacteristic->notify();
-        Serial.printf("[BLE] TX notify: %s\n", ack.c_str());
-      }
+      rfPairingActive = true;
+      rfPairType = pairType;
+      rfPairName = pairName.length() ? pairName : pairType;
+      rfPairZone = pairZone.length() ? pairZone : "General";
+      rfPairingId = pairId;
+      rfPairingStartedAt = millis();
+      Serial.println("[RF] Waiting for next RF signal for pairing");
       return;
     }
 
@@ -420,6 +460,146 @@ void setAlarmOutputs(bool on) {
   digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
 }
 
+void sendPairingNotify(const String &status, uint32_t rfCode = 0) {
+  if (!wifiTxCharacteristic || !bleProvisioningActive) {
+    return;
+  }
+
+  String json = "{\"type\":\"sensor_ack\",\"status\":\"" + status + "\",\"pairing_id\":" +
+                (rfPairingId.length() ? rfPairingId : "0") +
+                ",\"pair_type\":\"" + rfPairType + "\",\"name\":\"" + rfPairName +
+                "\",\"zone\":\"" + rfPairZone + "\"";
+  if (rfCode != 0) {
+    json += ",\"rf_code\":\"" + String(rfCode) + "\",\"mac\":\"" + String(rfCode) +
+            "\",\"ble_name\":\"" + rfPairName + "\"";
+  }
+  json += "}";
+
+  wifiTxCharacteristic->setValue(json.c_str());
+  wifiTxCharacteristic->notify();
+  Serial.printf("[BLE] TX notify: %s\n", json.c_str());
+}
+
+void clearRfPairingRequest() {
+  rfPairingActive = false;
+  rfPairType = "";
+  rfPairName = "";
+  rfPairZone = "";
+  rfPairingId = "";
+  rfPairingStartedAt = 0;
+}
+
+const char *rfTypeToString(RfType type) {
+  switch (type) {
+    case RF_TYPE_DOOR: return "door";
+    case RF_TYPE_REMOTE_ARM: return "remote_arm";
+    case RF_TYPE_REMOTE_DISARM: return "remote_disarm";
+    case RF_TYPE_PANIC: return "panic";
+    default: return "unknown";
+  }
+}
+
+RfType rfTypeFromString(String value) {
+  value.trim();
+  value.toLowerCase();
+  if (value == "door") return RF_TYPE_DOOR;
+  if (value == "remote_arm" || value == "remote arm") return RF_TYPE_REMOTE_ARM;
+  if (value == "remote_disarm" || value == "remote disarm") return RF_TYPE_REMOTE_DISARM;
+  if (value == "panic") return RF_TYPE_PANIC;
+  return RF_TYPE_NONE;
+}
+
+String learnedRfLabel(const LearnedRfItem &item) {
+  String label = strlen(item.name) ? String(item.name) : String("LEARNED SENSOR");
+  if (strlen(item.zone) > 0) {
+    label += " - ";
+    label += item.zone;
+  }
+  return label;
+}
+
+int findLearnedRfIndex(uint32_t code) {
+  for (uint8_t i = 0; i < learnedRfItemCount; i++) {
+    if (learnedRfItems[i].code == code) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void saveLearnedRfItems() {
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.putUChar(PREF_LEARNED_RF_COUNT, learnedRfItemCount);
+  if (learnedRfItemCount == 0) {
+    prefs.remove(PREF_LEARNED_RF_DATA);
+  } else {
+    prefs.putBytes(PREF_LEARNED_RF_DATA, learnedRfItems, learnedRfItemCount * sizeof(LearnedRfItem));
+  }
+  prefs.end();
+  Serial.printf("[RF] Learned RF items saved=%u\n", learnedRfItemCount);
+}
+
+void loadLearnedRfItems() {
+  memset(learnedRfItems, 0, sizeof(learnedRfItems));
+  prefs.begin(PREF_NAMESPACE, true);
+  learnedRfItemCount = prefs.getUChar(PREF_LEARNED_RF_COUNT, 0);
+  if (learnedRfItemCount > MAX_LEARNED_RF_ITEMS) {
+    learnedRfItemCount = MAX_LEARNED_RF_ITEMS;
+  }
+  size_t expected = learnedRfItemCount * sizeof(LearnedRfItem);
+  size_t actual = 0;
+  if (expected > 0) {
+    actual = prefs.getBytes(PREF_LEARNED_RF_DATA, learnedRfItems, expected);
+  }
+  prefs.end();
+
+  if (expected > 0 && actual != expected) {
+    Serial.printf("[RF] Learned RF load mismatch expected=%u actual=%u\n", static_cast<unsigned>(expected), static_cast<unsigned>(actual));
+    memset(learnedRfItems, 0, sizeof(learnedRfItems));
+    learnedRfItemCount = 0;
+  }
+
+  Serial.printf("[RF] Learned RF items loaded=%u\n", learnedRfItemCount);
+}
+
+bool storeLearnedRfItem(uint32_t code, const String &pairType, const String &pairName, const String &pairZone) {
+  RfType type = rfTypeFromString(pairType);
+  if (type == RF_TYPE_NONE) {
+    type = RF_TYPE_DOOR;
+  }
+
+  int index = findLearnedRfIndex(code);
+  if (index < 0) {
+    if (learnedRfItemCount >= MAX_LEARNED_RF_ITEMS) {
+      Serial.println("[RF] Learned RF storage full");
+      return false;
+    }
+    index = learnedRfItemCount++;
+  }
+
+  LearnedRfItem &item = learnedRfItems[index];
+  memset(&item, 0, sizeof(item));
+  item.code = code;
+  item.type = static_cast<uint8_t>(type);
+
+  String finalName = pairName.length() ? pairName : pairType;
+  String finalZone = pairZone;
+  finalName.trim();
+  finalZone.trim();
+
+  snprintf(item.name, sizeof(item.name), "%s", finalName.c_str());
+  snprintf(item.zone, sizeof(item.zone), "%s", finalZone.c_str());
+
+  saveLearnedRfItems();
+  Serial.printf("[RF] Learned item stored idx=%d code=%lu type=%s name=%s zone=%s\n",
+                index,
+                static_cast<unsigned long>(code),
+                rfTypeToString(type),
+                item.name,
+                item.zone);
+  return true;
+}
+
 void loadWifiCredentials() {
   prefs.begin(PREF_NAMESPACE, true);
   provisionedSsid = prefs.getString(PREF_WIFI_SSID, DEFAULT_WIFI_SSID);
@@ -466,6 +646,7 @@ void startBleProvisioning() {
   Serial.println("[BLE] Starting provisioning mode");
   BLEDevice::init(BLE_DEVICE_NAME);
   bleServer = BLEDevice::createServer();
+  bleServer->setCallbacks(new ProvisioningServerCallbacks());
   BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
 
   wifiRxCharacteristic = service->createCharacteristic(
@@ -809,6 +990,40 @@ void initModem() {
 }
 
 void handleRfCode(uint32_t code) {
+  if (rfPairingActive) {
+    Serial.printf("[RF] Pairing capture code=%lu type=%s\n", static_cast<unsigned long>(code), rfPairType.c_str());
+    if (storeLearnedRfItem(code, rfPairType, rfPairName, rfPairZone)) {
+      sendPairingNotify("paired", code);
+    } else {
+      sendPairingNotify("pair_save_failed", code);
+    }
+    clearRfPairingRequest();
+    return;
+  }
+
+  int learnedIndex = findLearnedRfIndex(code);
+  if (learnedIndex >= 0) {
+    const LearnedRfItem &item = learnedRfItems[learnedIndex];
+    String label = learnedRfLabel(item);
+    Serial.printf("[RF] Matched learned %s\n", label.c_str());
+    switch (static_cast<RfType>(item.type)) {
+      case RF_TYPE_DOOR:
+        handleDoorTrigger(label.c_str());
+        return;
+      case RF_TYPE_REMOTE_ARM:
+        setMode(MODE_ARMED, "RF");
+        return;
+      case RF_TYPE_REMOTE_DISARM:
+        setMode(MODE_DISARMED, "RF");
+        return;
+      case RF_TYPE_PANIC:
+        triggerAlarm("RF PANIC BUTTON", true);
+        return;
+      default:
+        break;
+    }
+  }
+
   for (uint8_t i = 0; i < RF_ITEM_COUNT; i++) {
     if (RF_ITEMS[i].code == 0 || RF_ITEMS[i].code != code) {
       continue;
@@ -894,10 +1109,11 @@ void setup() {
   Serial.printf("[RF] Receiver enabled on GPIO %d\n", RF_PIN);
 
   if (CLEAR_WIFI_ON_EVERY_BOOT) {
-    clearAllStoredData();
+    clearWifiCredentials();
   } else {
     loadWifiCredentials();
   }
+  loadLearnedRfItems();
   if (!wifiProvisioned) {
     startBleProvisioning();
   }
@@ -911,9 +1127,21 @@ void loop() {
     connectWiFi();
   }
   pollSystemState();
+  if (rfPairingActive && millis() - rfPairingStartedAt > RF_PAIR_WINDOW_MS) {
+    Serial.println("[RF] Pairing window timed out");
+    sendPairingNotify("timeout");
+    clearRfPairingRequest();
+  }
   pollRf();
   pollDoorZones();
   updateAlarmBuzzer();
   delay(50);
 }
+
+
+
+
+
+
+
 

@@ -929,6 +929,7 @@ class _PairingDialogState extends State<_PairingDialog> {
   static const String _writeUuid  = '703de63c-1c78-703d-e63c-1a42b93437e3';
   static const String _notifyUuid = '703de63c-1c78-703d-e63c-1a42b93437e4';
   static const int    _totalSec   = 30;
+  static const String _buildTag   = 'HUB BLE PATCH 24MAR';
 
   int    _secondsLeft    = _totalSec;
   bool   _isPairing      = false;
@@ -1254,6 +1255,10 @@ class _PairingDialogState extends State<_PairingDialog> {
         'timestamp':  DateTime.now().millisecondsSinceEpoch,
       });
 
+      if (mounted) {
+        setState(() => _statusMsg = 'Waiting for RF sensor signal...');
+      }
+
       final bytes = Uint8List.fromList(utf8.encode(pairCmd));
       const chunkSize = 20;
       for (int i = 0; i < bytes.length; i += chunkSize) {
@@ -1276,7 +1281,7 @@ class _PairingDialogState extends State<_PairingDialog> {
           final raw = await notifyChar.lastValueStream
               .where((v) => v.isNotEmpty)
               .first
-              .timeout(const Duration(seconds: 8));
+.timeout(Duration(seconds: _totalSec));
           final ack = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
           final ackType = ack['type']?.toString();
           final ackStatus = ack['status']?.toString() ?? '';
@@ -1530,6 +1535,10 @@ class _PairingDialogState extends State<_PairingDialog> {
         ]),
       ]),
       const SizedBox(height: 12),
+      const Text(_buildTag,
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white38, fontSize: 11)),
+      const SizedBox(height: 6),
       Text(_statusMsg,
           textAlign: TextAlign.center,
           style: const TextStyle(color: Colors.white70, fontSize: 13)),
@@ -1674,5 +1683,7 @@ class _PairingDialogState extends State<_PairingDialog> {
     ];
   }
 }
+
+
 
 
