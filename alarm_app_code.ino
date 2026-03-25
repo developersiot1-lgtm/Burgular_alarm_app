@@ -106,7 +106,8 @@ enum RfType : uint8_t {
   RF_TYPE_DOOR = 1,
   RF_TYPE_REMOTE_ARM = 2,
   RF_TYPE_REMOTE_DISARM = 3,
-  RF_TYPE_PANIC = 4
+  RF_TYPE_PANIC = 4,
+  RF_TYPE_MOTION = 5
 };
 
 struct ManualRfItem {
@@ -184,6 +185,7 @@ bool rfPairingActive = false;
 String rfPairType;
 String rfPairName;
 String rfPairZone;
+String rfPairRemoteMode;
 String rfPairingId;
 unsigned long rfPairingStartedAt = 0;
 
@@ -322,6 +324,7 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
     String pairType;
     String pairName;
     String pairZone;
+    String pairRemoteMode;
     String pairId;
 
     int cmdKey = payload.indexOf("\"cmd\"");
@@ -338,6 +341,7 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
       int typeKey = payload.indexOf("\"type\"");
       int nameKey = payload.indexOf("\"name\"");
       int zoneKey = payload.indexOf("\"zone\"");
+      int remoteModeKey = payload.indexOf("\"remote_mode\"");
       int pairingIdKey = payload.indexOf("\"pairing_id\"");
 
       if (typeKey >= 0) {
@@ -358,6 +362,12 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
         int q2 = payload.indexOf('"', q1 + 1);
         if (colon >= 0 && q1 >= 0 && q2 > q1) pairZone = payload.substring(q1 + 1, q2);
       }
+      if (remoteModeKey >= 0) {
+        int colon = payload.indexOf(':', remoteModeKey);
+        int q1 = payload.indexOf('"', colon + 1);
+        int q2 = payload.indexOf('"', q1 + 1);
+        if (colon >= 0 && q1 >= 0 && q2 > q1) pairRemoteMode = payload.substring(q1 + 1, q2);
+      }
       if (pairingIdKey >= 0) {
         int colon = payload.indexOf(':', pairingIdKey);
         int end = payload.indexOf(',', colon + 1);
@@ -370,12 +380,14 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
       Serial.printf("[BLE] Pair type=%s\n", pairType.c_str());
       Serial.printf("[BLE] Pair name=%s\n", pairName.c_str());
       Serial.printf("[BLE] Pair zone=%s\n", pairZone.c_str());
+      Serial.printf("[BLE] Pair remote_mode=%s\n", pairRemoteMode.c_str());
       Serial.printf("[BLE] Pair pairing_id=%s\n", pairId.c_str());
 
       rfPairingActive = true;
       rfPairType = pairType;
       rfPairName = pairName.length() ? pairName : pairType;
       rfPairZone = pairZone.length() ? pairZone : "General";
+      rfPairRemoteMode = pairRemoteMode;
       rfPairingId = pairId;
       rfPairingStartedAt = millis();
       Serial.println("[RF] Waiting for next RF signal for pairing");
@@ -485,6 +497,7 @@ void clearRfPairingRequest() {
   rfPairType = "";
   rfPairName = "";
   rfPairZone = "";
+  rfPairRemoteMode = "";
   rfPairingId = "";
   rfPairingStartedAt = 0;
 }
@@ -495,6 +508,7 @@ const char *rfTypeToString(RfType type) {
     case RF_TYPE_REMOTE_ARM: return "remote_arm";
     case RF_TYPE_REMOTE_DISARM: return "remote_disarm";
     case RF_TYPE_PANIC: return "panic";
+    case RF_TYPE_MOTION: return "motion";
     default: return "unknown";
   }
 }
@@ -506,7 +520,32 @@ RfType rfTypeFromString(String value) {
   if (value == "remote_arm" || value == "remote arm") return RF_TYPE_REMOTE_ARM;
   if (value == "remote_disarm" || value == "remote disarm") return RF_TYPE_REMOTE_DISARM;
   if (value == "panic") return RF_TYPE_PANIC;
+  if (value == "motion" || value == "pir") return RF_TYPE_MOTION;
   return RF_TYPE_NONE;
+}
+
+RfType resolvePairingRfType(String pairType, String pairRemoteMode, String pairZone) {
+  pairType.trim();
+  pairRemoteMode.trim();
+  pairZone.trim();
+  pairType.toLowerCase();
+  pairRemoteMode.toLowerCase();
+  pairZone.toLowerCase();
+
+  if (pairType == "remote") {
+    if (pairRemoteMode == "disarm" || pairRemoteMode == "disarmed" || pairZone == "disarm") {
+      return RF_TYPE_REMOTE_DISARM;
+    }
+    if (pairRemoteMode == "arm" || pairRemoteMode == "armed" || pairZone == "arm") {
+      return RF_TYPE_REMOTE_ARM;
+    }
+  }
+
+  RfType directType = rfTypeFromString(pairType);
+  if (directType != RF_TYPE_NONE) {
+    return directType;
+  }
+  return RF_TYPE_DOOR;
 }
 
 String learnedRfLabel(const LearnedRfItem &item) {
@@ -562,11 +601,8 @@ void loadLearnedRfItems() {
   Serial.printf("[RF] Learned RF items loaded=%u\n", learnedRfItemCount);
 }
 
-bool storeLearnedRfItem(uint32_t code, const String &pairType, const String &pairName, const String &pairZone) {
-  RfType type = rfTypeFromString(pairType);
-  if (type == RF_TYPE_NONE) {
-    type = RF_TYPE_DOOR;
-  }
+bool storeLearnedRfItem(uint32_t code, const String &pairType, const String &pairName, const String &pairZone, const String &pairRemoteMode) {
+  RfType type = resolvePairingRfType(pairType, pairRemoteMode, pairZone);
 
   int index = findLearnedRfIndex(code);
   if (index < 0) {
@@ -992,7 +1028,7 @@ void initModem() {
 void handleRfCode(uint32_t code) {
   if (rfPairingActive) {
     Serial.printf("[RF] Pairing capture code=%lu type=%s\n", static_cast<unsigned long>(code), rfPairType.c_str());
-    if (storeLearnedRfItem(code, rfPairType, rfPairName, rfPairZone)) {
+    if (storeLearnedRfItem(code, rfPairType, rfPairName, rfPairZone, rfPairRemoteMode)) {
       sendPairingNotify("paired", code);
     } else {
       sendPairingNotify("pair_save_failed", code);
@@ -1008,6 +1044,9 @@ void handleRfCode(uint32_t code) {
     Serial.printf("[RF] Matched learned %s\n", label.c_str());
     switch (static_cast<RfType>(item.type)) {
       case RF_TYPE_DOOR:
+        handleDoorTrigger(label.c_str());
+        return;
+      case RF_TYPE_MOTION:
         handleDoorTrigger(label.c_str());
         return;
       case RF_TYPE_REMOTE_ARM:
@@ -1137,6 +1176,7 @@ void loop() {
   updateAlarmBuzzer();
   delay(50);
 }
+
 
 
 
