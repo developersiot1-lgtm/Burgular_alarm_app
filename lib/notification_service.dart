@@ -14,13 +14,22 @@ class NotificationService {
   Future<void> init() async {
     if (_initialized) return;
 
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings = InitializationSettings(android: androidInit);
-    await _plugin.initialize(initSettings);
+    try {
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const initSettings = InitializationSettings(android: androidInit);
+      await _plugin.initialize(initSettings);
 
-    // Android 13+ runtime permission.
-    if (await Permission.notification.isDenied) {
-      await Permission.notification.request();
+      // Android 13+ runtime permission.
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+    } catch (e) {
+      // Never allow notification setup failures to break arm/disarm UI.
+      // (Some devices/ROMs throw PlatformException from the plugin.)
+      // The app will continue without system notifications.
+      // ignore: avoid_print
+      print('❌ Notification init failed: $e');
+      return;
     }
 
     _initialized = true;
@@ -30,6 +39,7 @@ class NotificationService {
     if (!_initialized) {
       await init();
     }
+    if (!_initialized) return;
 
     const androidDetails = AndroidNotificationDetails(
       _channelId,
@@ -41,7 +51,11 @@ class NotificationService {
     );
 
     const details = NotificationDetails(android: androidDetails);
-    await _plugin.show(1, title, body, details);
+    try {
+      await _plugin.show(1, title, body, details);
+    } catch (e) {
+      // ignore: avoid_print
+      print('❌ Notification show failed: $e');
+    }
   }
 }
-
