@@ -1,4 +1,4 @@
-#define TINY_GSM_MODEM_SIM7600
+#define TINY_GSM_MODEM_A7672X
 #define TINY_GSM_DEBUG Serial
 
 #include <Arduino.h>
@@ -68,9 +68,11 @@ static const char *DEFAULT_WIFI_SSID = "";
 static const char *DEFAULT_WIFI_PASSWORD = "";
 static const char *SYSTEM_STATE_URL = "http://monsow.in/alarm/index.php?action=system_state";
 static const char *DEVICE_REGISTER_URL = "http://monsow.in/alarm/index.php?action=device_register";
+static const char *SETTINGS_URL_BASE = "http://monsow.in/alarm/index.php?action=sync_settings_to_device&device_uuid=";
 static const char *PREF_NAMESPACE = "alarmcfg";
 static const char *PREF_WIFI_SSID = "wifi_ssid";
 static const char *PREF_WIFI_PASS = "wifi_pass";
+static const char *PREF_SETTINGS_CACHE = "set_cache";
 static const char *BLE_DEVICE_NAME = "ESP32_ALARM_SETUP";
 static const char *BLE_SERVICE_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E2";
 static const char *BLE_RX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E3";
@@ -83,19 +85,17 @@ static const unsigned long MODEM_NETWORK_TIMEOUT_MS = 15000;
 static const unsigned long RF_PAIR_WINDOW_MS = 30000;
 
 // -------------------------------------------------------------------
-// Manual contact numbers
-// Edit these directly in code.
+// Contact numbers synced from server
 // -------------------------------------------------------------------
-static const char *SMS_NUMBERS[] = {
-  "+919344962337"
-};
-
-static const char *CALL_NUMBERS[] = {
-  "+919344962337"
-};
-
-static const uint8_t SMS_NUMBER_COUNT = sizeof(SMS_NUMBERS) / sizeof(SMS_NUMBERS[0]);
-static const uint8_t CALL_NUMBER_COUNT = sizeof(CALL_NUMBERS) / sizeof(CALL_NUMBERS[0]);
+static const uint8_t MAX_CONTACT_NUMBERS = 8;
+static const uint8_t CONTACT_NUMBER_LEN = 24;
+char smsNumbers[MAX_CONTACT_NUMBERS][CONTACT_NUMBER_LEN];
+char callNumbers[MAX_CONTACT_NUMBERS][CONTACT_NUMBER_LEN];
+uint8_t smsNumberCount = 0;
+uint8_t callNumberCount = 0;
+unsigned long lastSettingsFetchAt = 0;
+static const unsigned long SETTINGS_FETCH_MS = 1000;
+String cachedSettingsJson;
 
 // -------------------------------------------------------------------
 // Manual RF codes
@@ -173,6 +173,457 @@ unsigned long lastAlarmActionAt = 0;
 unsigned long lastWiFiAttemptAt = 0;
 bool alarmOutputsEnabled = false;
 int lastDoorZoneState[DOOR_ZONE_COUNT];
+uint16_t settingExitDelaySeconds = 0;
+uint16_t settingEntryDelaySeconds = 0;
+uint16_t settingAlarmDurationMinutes = 5;
+bool settingAlarmSound = true;
+unsigned long exitDelayEndsAt = 0;
+bool exitDelayActive = false;
+unsigned long entryDelayEndsAt = 0;
+bool entryDelayActive = false;
+String pendingAlarmReason;
+bool pendingAlarmAllowCall = false;
+SystemMode modeBeforeAlarm = MODE_DISARMED;
+unsigned long alarmEndsAt = 0;
+unsigned long lastCountdownTickAt = 0;
+bool settingAlarmCall = true;
+bool settingAlarmSms = true;
+bool settingSensorLowBatteryAlarm = true;
+bool settingAlarmNotification = true;
+bool settingCountdownWithTickTone = true;
+bool settingArmDisarmNotification = true;
+bool settingTamperAlarm = true;
+bool settingSensorLowBatteryNotification = true;
+uint8_t settingUnansweredPhoneRedialTimes = 0;
+String settingHubLanguage;
+String settingVirtualPassword;
+void clearContactNumbers() {
+  memset(smsNumbers, 0, sizeof(smsNumbers));
+  memset(callNumbers, 0, sizeof(callNumbers));
+  smsNumberCount = 0;
+  callNumberCount = 0;
+}
+
+bool copyContactNumber(char dest[CONTACT_NUMBER_LEN], const String &value) {
+  String input = value;
+  input.trim();
+  if (input.length() == 0) {
+    return false;
+  }
+
+  // Normalize: keep leading '+' (optional) and digits only. Reject letters.
+  String normalized;
+  normalized.reserve(input.length());
+  int digitCount = 0;
+
+  for (size_t i = 0; i < input.length(); i++) {
+    char c = input[i];
+    if (c >= '0' && c <= '9') {
+      normalized += c;
+      digitCount++;
+      continue;
+    }
+    if (c == '+' && normalized.length() == 0) {
+      normalized += c;
+      continue;
+    }
+    // Ignore common separators.
+    if (c == ' ' || c == '-' || c == '(' || c == ')' || c == '\t' || c == '\r' || c == '\n') {
+      continue;
+    }
+    // Any other character (letters, underscores, etc.) makes it invalid.
+    return false;
+  }
+
+  // Require at least 10 digits to avoid storing keys like "alarm_sound".
+  if (digitCount < 10) {
+    return false;
+  }
+
+  snprintf(dest, CONTACT_NUMBER_LEN, "%s", normalized.c_str());
+  return true;
+}
+
+uint8_t parseJsonStringArray(const String &body, const char *key, char out[][CONTACT_NUMBER_LEN], uint8_t maxCount) {
+  String pattern = "\"" + String(key) + "\"";
+  int keyPos = body.indexOf(pattern);
+  if (keyPos < 0) return 0;
+  int arrayStart = body.indexOf('[', keyPos);
+  int arrayEnd = body.indexOf(']', arrayStart + 1);
+  if (arrayStart < 0 || arrayEnd < 0 || arrayEnd <= arrayStart) return 0;
+
+  uint8_t count = 0;
+  int cursor = arrayStart + 1;
+  while (cursor < arrayEnd && count < maxCount) {
+    int q1 = body.indexOf('"', cursor);
+    if (q1 < 0 || q1 >= arrayEnd) break;
+    int q2 = body.indexOf('"', q1 + 1);
+    if (q2 < 0 || q2 > arrayEnd) break;
+    String value = body.substring(q1 + 1, q2);
+    if (copyContactNumber(out[count], value)) {
+      count++;
+    }
+    cursor = q2 + 1;
+  }
+  return count;
+}
+
+uint8_t splitContactNumbersCsv(const String &csv, char out[][CONTACT_NUMBER_LEN], uint8_t maxCount) {
+  uint8_t count = 0;
+  int start = 0;
+  while (start < csv.length() && count < maxCount) {
+    int comma = csv.indexOf(',', start);
+    String part = (comma < 0) ? csv.substring(start) : csv.substring(start, comma);
+    part.trim();
+    if (part.length() > 0) {
+      copyContactNumber(out[count], part);
+      if (out[count][0] != '\0') {
+        count++;
+      }
+    }
+    if (comma < 0) {
+      break;
+    }
+    start = comma + 1;
+  }
+  return count;
+}
+
+uint8_t parseJsonContactNumbersFlexible(const String &body, const char *key, char out[][CONTACT_NUMBER_LEN], uint8_t maxCount) {
+  uint8_t count = parseJsonStringArray(body, key, out, maxCount);
+  if (count > 0) {
+    return count;
+  }
+
+  // Also accept: "key": "+91..., +91..."
+  String raw = extractJsonStringValue(body, key);
+  if (raw.length() == 0) {
+    return 0;
+  }
+  String decoded = unescapeJsonString(raw);
+  decoded.trim();
+  if (decoded.length() == 0) {
+    return 0;
+  }
+  return splitContactNumbersCsv(decoded, out, maxCount);
+}
+
+String unescapeJsonString(const String &value) {
+  String out;
+  out.reserve(value.length());
+  bool escape = false;
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value[i];
+    if (escape) {
+      switch (c) {
+        case 'n': out += '\n'; break;
+        case 'r': out += '\r'; break;
+        case 't': out += '\t'; break;
+        case '\\': out += '\\'; break;
+        case '"': out += '"'; break;
+        default: out += c; break;
+      }
+      escape = false;
+    } else if (c == '\\') {
+      escape = true;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+String extractJsonObjectByKey(const String &body, const char *key) {
+  String pattern = "\"" + String(key) + "\"";
+  int keyPos = body.indexOf(pattern);
+  if (keyPos < 0) return "";
+  int start = body.indexOf('{', keyPos);
+  if (start < 0) return "";
+  int depth = 0;
+  bool inString = false;
+  bool escape = false;
+  for (int i = start; i < body.length(); i++) {
+    char c = body[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c == '\\') {
+      escape = true;
+      continue;
+    }
+    if (c == '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (c == '{') depth++;
+    if (c == '}') {
+      depth--;
+      if (depth == 0) {
+        return body.substring(start, i + 1);
+      }
+    }
+  }
+  return "";
+}
+
+String extractJsonStringValue(const String &body, const char *key) {
+  String pattern = "\"" + String(key) + "\"";
+  int keyPos = body.indexOf(pattern);
+  if (keyPos < 0) return "";
+  int colon = body.indexOf(':', keyPos);
+  int q1 = body.indexOf('"', colon + 1);
+  int q2 = q1;
+  bool escape = false;
+  while (q1 >= 0 && ++q2 < body.length()) {
+    char c = body[q2];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c == '\\') {
+      escape = true;
+      continue;
+    }
+    if (c == '"') {
+      return body.substring(q1 + 1, q2);
+    }
+  }
+  return "";
+}
+
+long extractJsonIntValue(const String &body, const char *key, long fallback) {
+  String pattern = "\"" + String(key) + "\"";
+  int keyPos = body.indexOf(pattern);
+  if (keyPos < 0) return fallback;
+  int colon = body.indexOf(':', keyPos);
+  if (colon < 0) return fallback;
+  int i = colon + 1;
+  while (i < body.length() && body[i] == ' ') i++;
+  String digits;
+  if (i < body.length() && (body[i] == '-' || isDigit(body[i]))) {
+    digits += body[i++];
+  }
+  while (i < body.length() && isDigit(body[i])) {
+    digits += body[i++];
+  }
+  return digits.length() ? digits.toInt() : fallback;
+}
+
+bool extractJsonBoolValue(const String &body, const char *key, bool fallback) {
+  String pattern = "\"" + String(key) + "\"";
+  int keyPos = body.indexOf(pattern);
+  if (keyPos < 0) return fallback;
+  int colon = body.indexOf(':', keyPos);
+  if (colon < 0) return fallback;
+  String tail = body.substring(colon + 1);
+  tail.trim();
+  if (tail.startsWith("true")) return true;
+  if (tail.startsWith("false")) return false;
+  return fallback;
+}
+
+String resolveSettingsPayload(const String &body) {
+  // We only accept settings from the server response field `settings_json`.
+  // (Your server may source it from `settings_sync_log` or `device_registry`.)
+  // Server can return it as:
+  // 1) settings_json: { ... } (object)
+  // 2) settings_json: "{\"exit_delay\":70,...}" (escaped string)
+  String settingsObject = extractJsonObjectByKey(body, "settings_json");
+  if (settingsObject.length() > 0) {
+    Serial.println("[SETTINGS] Using settings_json (object)");
+    return settingsObject;
+  }
+
+  String settingsJsonString = extractJsonStringValue(body, "settings_json");
+  if (settingsJsonString.length() > 0) {
+    String decoded = unescapeJsonString(settingsJsonString);
+    decoded.trim();
+    if (decoded.startsWith("{")) {
+      Serial.println("[SETTINGS] Using settings_json (string)");
+      return decoded;
+    }
+  }
+
+  Serial.println("[SETTINGS] ERROR: settings_json missing; ignoring server response");
+  return "";
+}
+void logSyncedSettings() {
+  Serial.printf("[SETTINGS] entry_delay=%u exit_delay=%u alarm_duration=%u\n",
+                settingEntryDelaySeconds,
+                settingExitDelaySeconds,
+                settingAlarmDurationMinutes);
+  Serial.printf("[SETTINGS] alarm_sound=%s alarm_call=%s alarm_sms=%s tamper=%s\n",
+                settingAlarmSound ? "true" : "false",
+                settingAlarmCall ? "true" : "false",
+                settingAlarmSms ? "true" : "false",
+                settingTamperAlarm ? "true" : "false");
+}
+
+void applySettingsPayload(const String &settingsBody) {
+  settingExitDelaySeconds = static_cast<uint16_t>(extractJsonIntValue(settingsBody, "exit_delay", settingExitDelaySeconds));
+  settingEntryDelaySeconds = static_cast<uint16_t>(extractJsonIntValue(settingsBody, "entry_delay", settingEntryDelaySeconds));
+  settingAlarmDurationMinutes = static_cast<uint16_t>(extractJsonIntValue(settingsBody, "alarm_duration", settingAlarmDurationMinutes));
+  settingAlarmSound = extractJsonBoolValue(settingsBody, "alarm_sound", settingAlarmSound);
+  settingAlarmCall = extractJsonBoolValue(settingsBody, "alarm_call", settingAlarmCall);
+  settingAlarmSms = extractJsonBoolValue(settingsBody, "alarm_sms", settingAlarmSms);
+  settingSensorLowBatteryAlarm = extractJsonBoolValue(settingsBody, "sensor_low_battery_alarm", settingSensorLowBatteryAlarm);
+  settingAlarmNotification = extractJsonBoolValue(settingsBody, "alarm_notification", settingAlarmNotification);
+  settingCountdownWithTickTone = extractJsonBoolValue(settingsBody, "countdown_with_tick_tone", settingCountdownWithTickTone);
+  settingArmDisarmNotification = extractJsonBoolValue(settingsBody, "arm_disarm_notification", settingArmDisarmNotification);
+  settingTamperAlarm = extractJsonBoolValue(settingsBody, "tamper_alarm", settingTamperAlarm);
+  settingSensorLowBatteryNotification = extractJsonBoolValue(settingsBody, "sensor_low_battery_notification", settingSensorLowBatteryNotification);
+  settingUnansweredPhoneRedialTimes = static_cast<uint8_t>(extractJsonIntValue(settingsBody, "unanswered_phone_redial_times", settingUnansweredPhoneRedialTimes));
+  String lang = extractJsonStringValue(settingsBody, "hub_language");
+  String vpass = extractJsonStringValue(settingsBody, "virtual_password");
+  if (lang.length()) settingHubLanguage = lang;
+  if (vpass.length()) settingVirtualPassword = vpass;
+  logSyncedSettings();
+}
+
+void applyServerSettings(const String &body) {
+  applySettingsPayload(resolveSettingsPayload(body));
+}
+
+void logContactNumbers() {
+  Serial.printf("[CONTACTS] SMS=%u CALL=%u\n", smsNumberCount, callNumberCount);
+  for (uint8_t i = 0; i < smsNumberCount; i++) {
+    Serial.printf("[CONTACTS] SMS[%u]=%s\n", i, smsNumbers[i]);
+  }
+  for (uint8_t i = 0; i < callNumberCount; i++) {
+    Serial.printf("[CONTACTS] CALL[%u]=%s\n", i, callNumbers[i]);
+  }
+}
+
+void applyContactNumbersFromSettingsPayload(const String &settingsBody) {
+  char newSms[MAX_CONTACT_NUMBERS][CONTACT_NUMBER_LEN] = {{0}};
+  char newCall[MAX_CONTACT_NUMBERS][CONTACT_NUMBER_LEN] = {{0}};
+  uint8_t newSmsCount = parseJsonContactNumbersFlexible(settingsBody, "alarm_sms_numbers", newSms, MAX_CONTACT_NUMBERS);
+  uint8_t newCallCount = parseJsonContactNumbersFlexible(settingsBody, "alarm_call_numbers", newCall, MAX_CONTACT_NUMBERS);
+
+  if (newSmsCount == 0 && newCallCount == 0) {
+    uint8_t sharedCount = parseJsonContactNumbersFlexible(settingsBody, "contact_numbers", newSms, MAX_CONTACT_NUMBERS);
+    for (uint8_t i = 0; i < sharedCount; i++) {
+      snprintf(newCall[i], CONTACT_NUMBER_LEN, "%s", newSms[i]);
+    }
+    newSmsCount = sharedCount;
+    newCallCount = sharedCount;
+  }
+
+  if (newSmsCount == 0 && newCallCount == 0) {
+    // If the server didn't provide any numbers (or they are empty), keep the
+    // current cached numbers instead of clearing them.
+    Serial.println("[CONTACTS] No numbers in settings_json; keeping existing cached numbers");
+    logContactNumbers();
+    return;
+  }
+
+  clearContactNumbers();
+  for (uint8_t i = 0; i < newSmsCount; i++) {
+    snprintf(smsNumbers[i], CONTACT_NUMBER_LEN, "%s", newSms[i]);
+  }
+  for (uint8_t i = 0; i < newCallCount; i++) {
+    snprintf(callNumbers[i], CONTACT_NUMBER_LEN, "%s", newCall[i]);
+  }
+  smsNumberCount = newSmsCount;
+  callNumberCount = newCallCount;
+  logContactNumbers();
+}
+
+void saveSettingsCacheIfChanged(const String &settingsBody) {
+  String normalized = settingsBody;
+  normalized.trim();
+  if (normalized.length() == 0) {
+    return;
+  }
+  if (normalized == cachedSettingsJson) {
+    Serial.println("[SETTINGS] No settings change, EEPROM cache not updated");
+    return;
+  }
+
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.putString(PREF_SETTINGS_CACHE, normalized);
+  prefs.end();
+  cachedSettingsJson = normalized;
+  Serial.println("[SETTINGS] Settings cache updated in EEPROM");
+}
+
+void loadCachedSettingsFromPreferences() {
+  prefs.begin(PREF_NAMESPACE, true);
+  cachedSettingsJson = prefs.getString(PREF_SETTINGS_CACHE, "");
+  prefs.end();
+  cachedSettingsJson.trim();
+
+  if (cachedSettingsJson.length() == 0) {
+    Serial.println("[SETTINGS] No cached settings found in EEPROM");
+    return;
+  }
+
+  Serial.println("[SETTINGS] Loaded cached settings from EEPROM");
+  applySettingsPayload(cachedSettingsJson);
+  applyContactNumbersFromSettingsPayload(cachedSettingsJson);
+}
+
+void fetchSettingsFromServer() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  HTTPClient http;
+  String url = String(SETTINGS_URL_BASE) + deviceUuid() + "&device_name=" + deviceName();
+  Serial.printf("[SETTINGS] GET %s\n", url.c_str());
+  http.begin(url);
+  int status = http.GET();
+  String body = http.getString();
+  Serial.printf("[SETTINGS] Status=%d body=%s\n", status, body.c_str());
+
+  http.end();
+
+  if (status != 200) {
+    return;
+  }
+
+  String settingsBody = resolveSettingsPayload(body);
+  if (settingsBody.length() == 0) {
+    return;
+  }
+  Serial.println("========== SETTINGS BODY ==========");
+  Serial.println(settingsBody);
+  Serial.println("===================================");
+  settingsBody.trim();
+  applySettingsPayload(settingsBody);
+  applyContactNumbersFromSettingsPayload(settingsBody);
+  saveSettingsCacheIfChanged(settingsBody);
+  lastSettingsFetchAt = millis();
+}
+
+void sendAlarmEvent(String eventType, String zone, String message) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[EVENT] WiFi not connected");
+    return;
+  }
+
+  HTTPClient http;
+  String url = "http://monsow.in/alarm/index.php?action=alarm_event";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+
+  String payload = "{";
+  payload += "\"device_uuid\":\"" + deviceUuid() + "\",";
+  payload += "\"event_type\":\"" + eventType + "\",";
+  payload += "\"zone\":\"" + zone + "\",";
+  payload += "\"message\":\"" + message + "\"";
+  payload += "}";
+
+  int response = http.POST(payload);
+
+  Serial.println("[EVENT] Sent: " + payload);
+  Serial.println("[EVENT] Response: " + String(response));
+
+  http.end();
+}
 bool bleProvisioningActive = false;
 bool bleClientConnected = false;
 bool wifiProvisioned = false;
@@ -469,7 +920,57 @@ void beep(uint8_t count, uint16_t onMs = 120, uint16_t offMs = 120) {
 void setAlarmOutputs(bool on) {
   alarmOutputsEnabled = on;
   digitalWrite(STATUS_LED_PIN, on ? HIGH : LOW);
-  digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+  digitalWrite(BUZZER_PIN, (on && settingAlarmSound) ? HIGH : LOW);
+}
+
+void playCountdownTick() {
+  if (!settingCountdownWithTickTone || !settingAlarmSound) {
+    return;
+  }
+  unsigned long now = millis();
+  if (now - lastCountdownTickAt < 900) {
+    return;
+  }
+  lastCountdownTickAt = now;
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(35);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void clearPendingAlarm() {
+  entryDelayActive = false;
+  entryDelayEndsAt = 0;
+  pendingAlarmReason = "";
+  pendingAlarmAllowCall = false;
+}
+
+void startEntryDelay(const String &reason, bool allowCall) {
+  if (settingEntryDelaySeconds == 0) {
+    return;
+  }
+  entryDelayActive = true;
+  entryDelayEndsAt = millis() + (static_cast<unsigned long>(settingEntryDelaySeconds) * 1000UL);
+  pendingAlarmReason = reason;
+  pendingAlarmAllowCall = allowCall;
+  lastCountdownTickAt = 0;
+  Serial.printf("[DELAY] Entry delay started for %u sec: %s\n", settingEntryDelaySeconds, reason.c_str());
+}
+
+void startExitDelay() {
+  if (settingExitDelaySeconds == 0) {
+    exitDelayActive = false;
+    exitDelayEndsAt = 0;
+    return;
+  }
+  exitDelayActive = true;
+  exitDelayEndsAt = millis() + (static_cast<unsigned long>(settingExitDelaySeconds) * 1000UL);
+  lastCountdownTickAt = 0;
+  Serial.printf("[DELAY] Exit delay started for %u sec\n", settingExitDelaySeconds);
+}
+
+void stopExitDelay() {
+  exitDelayActive = false;
+  exitDelayEndsAt = 0;
 }
 
 void sendPairingNotify(const String &status, uint32_t rfCode = 0) {
@@ -745,13 +1246,7 @@ String deviceUuid() {
 }
 
 String deviceName() {
-  String mac = deviceUuid();
-  String suffix = mac;
-  suffix.replace(":", "");
-  if (suffix.length() > 6) {
-    suffix = suffix.substring(suffix.length() - 6);
-  }
-  return "ESP32 Alarm " + suffix;
+  return String(BLE_DEVICE_NAME);
 }
 
 String readAtResponse(uint32_t timeoutMs = 1000) {
@@ -774,9 +1269,85 @@ String queryAt(const char *command, uint32_t timeoutMs = 1000) {
   return readAtResponse(timeoutMs);
 }
 
+int parseRegState(const String &response) {
+  int comma = response.indexOf(',');
+  if (comma < 0) return -1;
+  int i = comma + 1;
+  while (i < response.length() && !isDigit(response[i])) {
+    i++;
+  }
+  if (i >= response.length()) return -1;
+  String digits;
+  while (i < response.length() && isDigit(response[i])) {
+    digits += response[i++];
+  }
+  return digits.length() ? digits.toInt() : -1;
+}
+
+const char *regStateText(int stat) {
+  switch (stat) {
+    case 0: return "not registered";
+    case 1: return "registered(home)";
+    case 2: return "searching";
+    case 3: return "registration denied";
+    case 4: return "unknown";
+    case 5: return "registered(roaming)";
+    case 6: return "registered(SMS only, home)";
+    case 7: return "registered(SMS only, roaming)";
+    case 8: return "emergency only";
+    default: return "unparsed";
+  }
+}
+
+bool isSmsRegistrationState(int stat) {
+  return stat == 1 || stat == 5 || stat == 6 || stat == 7;
+}
+
+bool isVoiceRegistrationState(int stat) {
+  return stat == 1 || stat == 5;
+}
+
+bool smsServiceReady() {
+  int cregStat = parseRegState(queryAt("AT+CREG?", 700));
+  int cgregStat = parseRegState(queryAt("AT+CGREG?", 700));
+  int ceregStat = parseRegState(queryAt("AT+CEREG?", 700));
+  return isSmsRegistrationState(cregStat) || isSmsRegistrationState(cgregStat) || isSmsRegistrationState(ceregStat);
+}
+
+bool voiceServiceReady() {
+  int cregStat = parseRegState(queryAt("AT+CREG?", 700));
+  int ceregStat = parseRegState(queryAt("AT+CEREG?", 700));
+  return isVoiceRegistrationState(cregStat) || isVoiceRegistrationState(ceregStat);
+}
+
+void logGsmDiagnostics() {
+  String cpin = queryAt("AT+CPIN?", 700);
+  String creg = queryAt("AT+CREG?", 700);
+  String cgreg = queryAt("AT+CGREG?", 700);
+  String cereg = queryAt("AT+CEREG?", 700);
+  String cops = queryAt("AT+COPS?", 1000);
+  String csq = queryAt("AT+CSQ", 700);
+  int cregStat = parseRegState(creg);
+  int cgregStat = parseRegState(cgreg);
+  int ceregStat = parseRegState(cereg);
+
+  Serial.printf("[GSM] CPIN=%s\n", cpin.c_str());
+  Serial.printf("[GSM] CSQ=%s\n", csq.c_str());
+  Serial.printf("[GSM] CREG raw=%s\n", creg.c_str());
+  Serial.printf("[GSM] CREG state=%s\n", regStateText(cregStat));
+  Serial.printf("[GSM] CGREG raw=%s\n", cgreg.c_str());
+  Serial.printf("[GSM] CGREG state=%s\n", regStateText(cgregStat));
+  Serial.printf("[GSM] CEREG raw=%s\n", cereg.c_str());
+  Serial.printf("[GSM] CEREG state=%s\n", regStateText(ceregStat));
+  Serial.printf("[GSM] Operator=%s\n", cops.c_str());
+  Serial.printf("[GSM] SMS ready=%s\n", smsServiceReady() ? "YES" : "NO");
+  Serial.printf("[GSM] Voice ready=%s\n", voiceServiceReady() ? "YES" : "NO");
+}
+
 void logModemStatus() {
   String creg = queryAt("AT+CREG?", 700);
   String cgreg = queryAt("AT+CGREG?", 700);
+  String cereg = queryAt("AT+CEREG?", 700);
   String cops = queryAt("AT+COPS?", 1000);
   int signal = modem.getSignalQuality();
   bool netConnected = modem.isNetworkConnected();
@@ -785,14 +1356,14 @@ void logModemStatus() {
   Serial.printf("[MODEM] Signal quality=%d\n", signal);
   Serial.printf("[MODEM] CREG=%s\n", creg.c_str());
   Serial.printf("[MODEM] CGREG=%s\n", cgreg.c_str());
+  Serial.printf("[MODEM] CEREG=%s\n", cereg.c_str());
   Serial.printf("[MODEM] COPS=%s\n", cops.c_str());
 }
 
 bool gsmLooksUsable() {
   int signal = modem.getSignalQuality();
-  bool netConnected = modem.isNetworkConnected();
   String cops = queryAt("AT+COPS?", 1000);
-  return netConnected || signal > 0 || cops.indexOf("+COPS:") >= 0;
+  return smsServiceReady() || voiceServiceReady() || (signal > 0 && signal != 99) || cops.indexOf("+COPS:") >= 0;
 }
 
 void registerDeviceToServer() {
@@ -830,38 +1401,149 @@ void registerDeviceToServer() {
   http.end();
 }
 
+void reportTriggeredSensorToSystemState(const String &triggeredSensor) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[STATE] WiFi not connected, trigger report skipped");
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(SYSTEM_STATE_URL);
+  http.addHeader("Content-Type", "application/json");
+
+  String payload = "{";
+  payload += "\"device_uuid\":\"" + jsonEscape(deviceUuid()) + "\",";
+  payload += "\"state\":\"alarm\",";
+  payload += "\"triggered_sensor\":\"" + jsonEscape(triggeredSensor) + "\",";
+  payload += "\"alarm_reason\":\"" + jsonEscape(triggeredSensor) + "\"";
+  payload += "}";
+
+  Serial.printf("[STATE] POST %s\n", SYSTEM_STATE_URL);
+  Serial.printf("[STATE] Trigger payload: %s\n", payload.c_str());
+  int status = http.POST(payload);
+  String body = http.getString();
+  Serial.printf("[STATE] Trigger status=%d body=%s\n", status, body.c_str());
+  http.end();
+}
+
+void serviceAlarmPriorityTasks();
+
+bool alarmCancelled() {
+  return currentMode == MODE_DISARMED;
+}
+
+void cooperativeDelay(uint32_t durationMs) {
+  unsigned long start = millis();
+  while (millis() - start < durationMs) {
+    serviceAlarmPriorityTasks();
+    if (alarmCancelled()) {
+      return;
+    }
+    delay(20);
+  }
+}
+
 void sendSMS(const char *number, const String &message) {
   if (!number || strlen(number) < 10) return;
+  if (alarmCancelled()) return;
+  if (!smsServiceReady()) {
+    Serial.println("[SMS] SMS service not ready, SMS not sent");
+    logModemStatus();
+    logGsmDiagnostics();
+    return;
+  }
   Serial.printf("[SMS] Sending to %s: %s\n", number, message.c_str());
-  modem.sendSMS(number, message);
-  delay(500);
+  bool ok = modem.sendSMS(number, message);
+  Serial.printf("[SMS] Result=%s\n", ok ? "OK" : "FAIL");
+  if (!ok) {
+    logModemStatus();
+    logGsmDiagnostics();
+  }
+  cooperativeDelay(500);
 }
 
 void sendSmsToAll(const String &message) {
-  for (uint8_t i = 0; i < SMS_NUMBER_COUNT; i++) {
-    sendSMS(SMS_NUMBERS[i], message);
+  if (smsNumberCount == 0) {
+    Serial.println("[SMS] No synced SMS numbers available");
+    return;
+  }
+  for (uint8_t i = 0; i < smsNumberCount; i++) {
+    if (alarmCancelled()) {
+      Serial.println("[ALARM] SMS sending stopped due to disarm");
+      return;
+    }
+    sendSMS(smsNumbers[i], message);
   }
 }
 
 void callNumber(const char *number, uint32_t durationMs = 20000) {
   if (!number || strlen(number) < 10) return;
+  if (alarmCancelled()) return;
+  if (!voiceServiceReady()) {
+    Serial.println("[CALL] Voice service not ready, call not started");
+    logModemStatus();
+    logGsmDiagnostics();
+    return;
+  }
   Serial.printf("[CALL] Calling %s\n", number);
-  modem.callNumber(number);
-  delay(durationMs);
+  bool ok = modem.callNumber(number);
+  Serial.printf("[CALL] Dial result=%s\n", ok ? "OK" : "FAIL");
+  if (!ok) {
+    logModemStatus();
+    logGsmDiagnostics();
+    return;
+  }
+  unsigned long start = millis();
+  while (millis() - start < durationMs) {
+    serviceAlarmPriorityTasks();
+    if (alarmCancelled()) {
+      Serial.println("[ALARM] Hanging up due to disarm priority");
+      modem.callHangup();
+      return;
+    }
+    delay(20);
+  }
   modem.callHangup();
-  delay(1500);
+  cooperativeDelay(1500);
 }
 
 void callAll() {
-  for (uint8_t i = 0; i < CALL_NUMBER_COUNT; i++) {
-    callNumber(CALL_NUMBERS[i]);
+  if (callNumberCount == 0) {
+    Serial.println("[CALL] No synced call numbers available");
+    return;
+  }
+  for (uint8_t i = 0; i < callNumberCount; i++) {
+    if (alarmCancelled()) {
+      Serial.println("[ALARM] Calling stopped due to disarm");
+      return;
+    }
+    callNumber(callNumbers[i]);
   }
 }
 
 void sendAlert(const String &message, bool allowCall) {
-  sendSmsToAll(message);
-  if (allowCall) {
-    callAll();
+  if (!settingAlarmNotification) {
+    Serial.println("[ALERT] alarm_notification setting is disabled");
+    return;
+  }
+  if (settingAlarmSms) {
+    sendSmsToAll(message);
+  } else {
+    Serial.println("[SMS] alarm_sms setting is disabled");
+  }
+  if (allowCall && !alarmCancelled() && settingAlarmCall) {
+    uint8_t attempts = settingUnansweredPhoneRedialTimes > 0 ? settingUnansweredPhoneRedialTimes : 1;
+    for (uint8_t retry = 0; retry < attempts; retry++) {
+      if (retry > 0) {
+        Serial.printf("[CALL] Redial attempt %u/%u\n", retry + 1, attempts);
+      }
+      callAll();
+      if (alarmCancelled()) {
+        break;
+      }
+    }
+  } else if (allowCall && !settingAlarmCall) {
+    Serial.println("[CALL] alarm_call setting is disabled");
   }
 }
 
@@ -869,19 +1551,38 @@ void setMode(SystemMode mode, const char *reason) {
   currentMode = mode;
   switch (mode) {
     case MODE_ARMED:
+      clearPendingAlarm();
+      stopExitDelay();
       setAlarmOutputs(false);
+      startExitDelay();
       beep(1);
       Serial.printf("[STATE] ARMED by %s\n", reason);
+      if (settingArmDisarmNotification && String(reason) != "BOOT") {
+        sendSmsToAll("SYSTEM ARMED");
+      }
       break;
     case MODE_DISARMED:
+      modem.callHangup();
+      clearPendingAlarm();
+      stopExitDelay();
+      alarmEndsAt = 0;
       setAlarmOutputs(false);
       beep(2);
       Serial.printf("[STATE] DISARMED by %s\n", reason);
+      if (settingArmDisarmNotification && String(reason) != "BOOT") {
+        sendSmsToAll("SYSTEM DISARMED");
+      }
       break;
     case MODE_STAY_ARM:
+      clearPendingAlarm();
+      stopExitDelay();
       setAlarmOutputs(false);
+      startExitDelay();
       beep(3);
       Serial.printf("[STATE] STAY ARM by %s\n", reason);
+      if (settingArmDisarmNotification && String(reason) != "BOOT") {
+        sendSmsToAll("SYSTEM STAY ARM");
+      }
       break;
     case MODE_ALARM:
       Serial.printf("[STATE] ALARM by %s\n", reason);
@@ -895,17 +1596,48 @@ void triggerAlarm(const String &reason, bool allowCall) {
     return;
   }
   lastAlarmActionAt = now;
+  modeBeforeAlarm = currentMode;
   currentMode = MODE_ALARM;
+  alarmEndsAt = settingAlarmDurationMinutes > 0 ? now + (static_cast<unsigned long>(settingAlarmDurationMinutes) * 60000UL) : 0;
+  clearPendingAlarm();
+  setAlarmOutputs(true);
   Serial.printf("[ALARM] %s\n", reason.c_str());
+  sendAlarmEvent("ALARM_START", reason, reason);
+  reportTriggeredSensorToSystemState(reason);
   sendAlert("ALERT: " + reason, allowCall);
+}
+
+void updateAlarmBuzzer();
+
+void updateTimedAlarmState();
+
+void serviceAlarmPriorityTasks() {
+  pollRf();
+  pollSystemState();
+  updateTimedAlarmState();
+  updateAlarmBuzzer();
 }
 
 void handleDoorTrigger(const char *zoneName) {
   if (currentMode == MODE_DISARMED) {
     return;
   }
+  if (exitDelayActive) {
+    Serial.printf("[DELAY] Ignoring trigger during exit delay: %s\n", zoneName);
+    return;
+  }
+  if (entryDelayActive) {
+    Serial.printf("[DELAY] Entry delay already running, ignoring additional trigger: %s\n", zoneName);
+    return;
+  }
   bool allowCall = (currentMode != MODE_STAY_ARM);
-  triggerAlarm(String(zoneName) + " OPEN", allowCall);
+  String reason = String(zoneName) + " OPEN";
+  sendAlarmEvent("SENSOR_TRIGGER", String(zoneName), reason);
+  if (settingEntryDelaySeconds > 0) {
+    startEntryDelay(reason, allowCall);
+    return;
+  }
+  triggerAlarm(reason, allowCall);
 }
 
 void handleServerState(const String &state) {
@@ -980,6 +1712,7 @@ void connectWiFi() {
       wifiTxCharacteristic->notify();
     }
     registerDeviceToServer();
+    fetchSettingsFromServer();
   } else {
     Serial.println("[WIFI] Connection failed");
     if (wifiTxCharacteristic) {
@@ -995,14 +1728,38 @@ void initModem() {
   SerialAT.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
   delay(3000);
 
+  bool modemReady = false;
   Serial.println("[MODEM] Restarting modem");
   if (modem.restart()) {
+    modemReady = true;
     Serial.println("[MODEM] Restart OK");
   } else {
-    Serial.println("[MODEM] Restart failed");
+    Serial.println("[MODEM] Restart failed, trying init");
+    if (modem.init()) {
+      modemReady = true;
+      Serial.println("[MODEM] Init OK after restart failure");
+    } else {
+      String at = queryAt("AT", 700);
+      if (at.indexOf("OK") >= 0) {
+        modemReady = true;
+        Serial.println("[MODEM] AT responded OK, continuing without restart/init");
+      } else {
+        Serial.println("[MODEM] Init failed and AT not responding cleanly");
+      }
+    }
   }
 
+  Serial.println("[MODEM] Disabling command echo (ATE0)");
+  String ate0 = queryAt("ATE0", 700);
+  Serial.printf("[MODEM] ATE0 response=%s\n", ate0.c_str());
+  Serial.println("[MODEM] Settling before network checks");
+  delay(2000);
+
   logModemStatus();
+  logGsmDiagnostics();
+  if (!modemReady) {
+    Serial.println("[MODEM] Continuing boot with limited modem availability");
+  }
 
   Serial.println("[MODEM] Waiting for network");
   unsigned long start = millis();
@@ -1011,6 +1768,7 @@ void initModem() {
     if (millis() - start >= MODEM_NETWORK_TIMEOUT_MS) {
       Serial.printf("[MODEM] Network timeout after %lu ms\n", MODEM_NETWORK_TIMEOUT_MS);
       logModemStatus();
+      logGsmDiagnostics();
       if (gsmLooksUsable()) {
         Serial.println("[MODEM] GSM looks usable despite waitForNetwork timeout");
       } else {
@@ -1115,10 +1873,38 @@ void pollDoorZones() {
   }
 }
 
+void updateTimedAlarmState() {
+  unsigned long now = millis();
+  if (exitDelayActive) {
+    if (now >= exitDelayEndsAt) {
+      stopExitDelay();
+      Serial.println("[DELAY] Exit delay completed");
+    } else {
+      playCountdownTick();
+    }
+  }
+  if (entryDelayActive) {
+    if (now >= entryDelayEndsAt) {
+      String reason = pendingAlarmReason;
+      bool allowCall = pendingAlarmAllowCall;
+      clearPendingAlarm();
+      triggerAlarm(reason, allowCall);
+    } else {
+      playCountdownTick();
+    }
+  }
+  if (currentMode == MODE_ALARM && alarmEndsAt > 0 && now >= alarmEndsAt) {
+    Serial.println("[ALARM] Alarm duration expired");
+    SystemMode restoreMode = (modeBeforeAlarm == MODE_STAY_ARM) ? MODE_STAY_ARM : MODE_ARMED;
+    setMode(restoreMode, "ALARM TIMEOUT");
+    alarmEndsAt = 0;
+  }
+}
+
 void updateAlarmBuzzer() {
   if (currentMode == MODE_ALARM) {
-    bool on = ((millis() / 250) % 2) == 0;
-    digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+    bool on = ((millis() / 1000) % 2) == 0;
+    digitalWrite(BUZZER_PIN, (settingAlarmSound && on) ? HIGH : LOW);
     digitalWrite(STATUS_LED_PIN, on ? HIGH : LOW);
   }
 }
@@ -1148,11 +1934,12 @@ void setup() {
   Serial.printf("[RF] Receiver enabled on GPIO %d\n", RF_PIN);
 
   if (CLEAR_WIFI_ON_EVERY_BOOT) {
-    clearWifiCredentials();
+    clearAllStoredData();
   } else {
     loadWifiCredentials();
   }
   loadLearnedRfItems();
+  loadCachedSettingsFromPreferences();
   if (!wifiProvisioned) {
     startBleProvisioning();
   }
@@ -1162,20 +1949,40 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > 10000) {
+  if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > 1000) {
     connectWiFi();
   }
+  if (WiFi.status() == WL_CONNECTED && millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
+    fetchSettingsFromServer();
+  }
+  pollRf();
   pollSystemState();
   if (rfPairingActive && millis() - rfPairingStartedAt > RF_PAIR_WINDOW_MS) {
     Serial.println("[RF] Pairing window timed out");
     sendPairingNotify("timeout");
     clearRfPairingRequest();
   }
-  pollRf();
+  updateTimedAlarmState();
   pollDoorZones();
   updateAlarmBuzzer();
   delay(50);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
