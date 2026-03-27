@@ -204,7 +204,12 @@ class AlarmSystemProvider with ChangeNotifier {
           await NotificationService.instance.showAlarmTriggered(
             title: 'ALARM',
             body: body,
+            startAlarmTone: true,
           );
+        }
+
+        if (newState != SystemState.alarm) {
+          NotificationService.instance.stopAlarmToneLoop();
         }
       }
       // Also fetch alarm_events so sensor triggers can show rich notifications.
@@ -288,11 +293,13 @@ class AlarmSystemProvider with ChangeNotifier {
           await NotificationService.instance.showAlarmTriggered(
             title: 'SENSOR TRIGGER',
             body: zone.isNotEmpty ? '$zone: $message' : message,
+            startAlarmTone: true,
           );
         } else if (eventType == 'ALARM_START' || eventType == 'ALARM_TRIGGER') {
           await NotificationService.instance.showAlarmTriggered(
             title: 'ALARM',
             body: zone.isNotEmpty ? '$zone: $message' : message,
+            startAlarmTone: true,
           );
         }
       }
@@ -442,6 +449,10 @@ class AlarmSystemProvider with ChangeNotifier {
         // Update local state
         _currentState = newState;
         await _saveToOfflineStorage();
+      }
+
+      if (newState == SystemState.disarmed) {
+        NotificationService.instance.stopAlarmToneLoop();
       }
 
       // Add activity log (local)
