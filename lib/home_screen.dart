@@ -216,12 +216,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         final alarmSystem =
         Provider.of<AlarmSystemProvider>(context, listen: false);
         final info       = await DeviceInfoPlugin().androidInfo;
-        final deviceUuid = info.id;
-        alarmSystem.initialize(_apiService!, deviceUuid: deviceUuid);
-        _registerCurrentMobileDevice(deviceUuid);
+        final mobileDeviceUuid = info.id;
+        _registerCurrentMobileDevice(mobileDeviceUuid);
 
         final settings = SettingsManager();
         _hubDeviceUuid  = settings.connectedDeviceUuid;
+        final hubUuid = (_hubDeviceUuid != null && _hubDeviceUuid!.isNotEmpty)
+            ? _hubDeviceUuid!
+            : mobileDeviceUuid;
+
+        // IMPORTANT: Alarm system control + polling must use the HUB/ESP32 UUID,
+        // not the phone's hardware id. Otherwise alarm_events and arm/disarm won't match.
+        alarmSystem.initialize(_apiService!, deviceUuid: hubUuid);
         _loadAccessories();
       }
     });
