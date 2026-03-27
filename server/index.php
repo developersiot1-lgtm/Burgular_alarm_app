@@ -1114,12 +1114,12 @@ private function syncSettingsToDevice() {
 // ── Step 2: Get latest settings from settings_sync_log ────────────
 // Single source of truth — Flutter always writes here via saveSettings()
 $syncRow = $this->db->fetchOne(
-    "SELECT settings_json
+    "SELECT id, synced_at, settings_json
      FROM settings_sync_log
      WHERE device_uuid = ?
        AND sync_type = 'upload'
        AND sync_status = 'success'
-     ORDER BY synced_at DESC, id DESC
+     ORDER BY id DESC
      LIMIT 1",
     [$device_uuid]
 );
@@ -1231,6 +1231,9 @@ if (!$syncRow || empty($syncRow['settings_json'])) {
             'success'       => true,
             'device_uuid'   => $device_uuid,
             'device_name'   => $device_name,
+            'settings_source' => 'settings_sync_log',
+            'sync_log_id'   => $syncRow['id'] ?? null,
+            'sync_log_synced_at' => $syncRow['synced_at'] ?? null,
             'settings_json' => $settings,
         ]);
 
