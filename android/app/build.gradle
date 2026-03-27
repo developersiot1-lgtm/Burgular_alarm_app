@@ -35,6 +35,9 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.debug
+            // Avoid R8 stripping generic signatures used by some plugins (e.g. flutter_local_notifications).
+            minifyEnabled false
+            shrinkResources false
             // If you enable minify/shrinking later, keep rules live here.
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

@@ -28,7 +28,7 @@ class NotificationService {
       // (Some devices/ROMs throw PlatformException from the plugin.)
       // The app will continue without system notifications.
       // ignore: avoid_print
-      print('❌ Notification init failed: $e');
+      print('Notification init failed: $e');
       return;
     }
 
@@ -55,7 +55,7 @@ class NotificationService {
       await _plugin.show(1, title, body, details);
     } catch (e) {
       // ignore: avoid_print
-      print('❌ Notification show failed: $e');
+      print('Notification show failed: $e');
     }
   }
 }

@@ -69,12 +69,7 @@ class ConnectionManager with ChangeNotifier {
       final conn = await Connectivity().checkConnectivity();
       if (conn == ConnectivityResult.none) return false;
 
-      // Verify real internet
-      final lookup = await InternetAddress.lookup('google.com')
-          .timeout(const Duration(seconds: 5));
-      if (lookup.isEmpty || lookup[0].rawAddress.isEmpty) return false;
-
-      // Verify device exists on server
+      // Verify server reachability (don't depend on google.com being reachable on all networks).
       final res = await http.get(
         Uri.parse('$_baseUrl?action=device_info&device_uuid=$_deviceUuid'),
       ).timeout(const Duration(seconds: 10));

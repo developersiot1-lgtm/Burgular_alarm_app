@@ -396,6 +396,13 @@ class ApiRouter {
         $this->alarmEvent();
     }
     break;
+case 'alarm_events':
+    if ($this->requestMethod === 'GET') {
+        $this->getAlarmEvents();
+    } else {
+        $this->sendResponse(['error' => 'Method not allowed'], 405);
+    }
+    break;
 case 'update_pairing_status':
     if ($this->requestMethod === 'POST') {
         $this->updatePairingStatus();
@@ -2765,6 +2772,56 @@ private function alarmEvent() {
 
     } catch (Exception $e) {
         $this->sendResponse(['error' => $e->getMessage()], 500);
+    }
+}
+
+private function getAlarmEvents() {
+    try {
+        $device_uuid = trim($_GET['device_uuid'] ?? '');
+        $since_id    = isset($_GET['since_id']) ? intval($_GET['since_id']) : 0;
+        $limit       = isset($_GET['limit']) ? intval($_GET['limit']) : 20;
+        $latest      = isset($_GET['latest']) && in_array(strtolower((string)$_GET['latest']), ['1', 'true', 'yes'], true);
+
+        if (empty($device_uuid)) {
+            throw new Exception('device_uuid is required');
+        }
+        if ($limit <= 0 || $limit > 100) $limit = 20;
+        if ($since_id < 0) $since_id = 0;
+
+        // Accept either WiFi UUID (device_uuid) or BLE UUID (ble_service_uuid),
+        // but alarm_events are stored against the canonical device_uuid.
+        $hub = $this->db->fetchOne(
+            "SELECT device_uuid, ble_service_uuid
+             FROM device_registry
+             WHERE (device_uuid = ? OR ble_service_uuid = ?)
+             LIMIT 1",
+            [$device_uuid, $device_uuid]
+        );
+        $canonical_uuid = $hub ? $hub['device_uuid'] : $device_uuid;
+
+        $params = [$canonical_uuid];
+        $sql = "SELECT id, device_uuid, event_type, zone, message, created_at
+                FROM alarm_events
+                WHERE device_uuid = ?";
+        if ($since_id > 0) {
+            $sql .= " AND id > ?";
+            $params[] = $since_id;
+        }
+        $sql .= $latest ? " ORDER BY id DESC" : " ORDER BY id ASC";
+        $sql .= " LIMIT " . $limit;
+
+        $events = $this->db->fetchAll($sql, $params);
+
+        $this->sendResponse([
+            'success'      => true,
+            'device_uuid'  => $canonical_uuid,
+            'since_id'     => $since_id,
+            'count'        => count($events),
+            'events'       => $events,
+            'server_time'  => date('Y-m-d H:i:s'),
+        ]);
+    } catch (Exception $e) {
+        $this->sendResponse(['error' => $e->getMessage()], 400);
     }
 }
 

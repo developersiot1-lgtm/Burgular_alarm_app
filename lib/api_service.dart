@@ -289,6 +289,33 @@ class ApiService {
     }
   }
 
+  /// Get alarm events for a device (used for sensor-trigger notifications).
+  /// GET ?action=alarm_events&device_uuid=...&since_id=...&limit=...
+  Future<List<dynamic>> getAlarmEvents({
+    required String deviceUuid,
+    int? sinceId,
+    int limit = 20,
+    bool latest = false,
+  }) async {
+    try {
+      final sid = sinceId ?? 0;
+      final uri = Uri.parse(
+        '$baseUrl?action=alarm_events&device_uuid=${Uri.encodeComponent(deviceUuid)}&since_id=$sid&limit=$limit&latest=${latest ? 1 : 0}',
+      );
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return [];
+
+      final data = json.decode(response.body);
+      final events = data['events'];
+      if (events is List) return events;
+      return [];
+    } catch (e) {
+      // ignore: avoid_print
+      print('Get alarm events error: $e');
+      return [];
+    }
+  }
+
   /// Update system state
   Future<void> updateSystemState(String state, {String? user}) async {
     try {

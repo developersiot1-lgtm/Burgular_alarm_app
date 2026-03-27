@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'api_service.dart';
 import 'offline_manager.dart';
@@ -116,6 +117,9 @@ class AlarmSystemProvider with ChangeNotifier {
   int? _lastSystemStateId;
   String? _lastSystemStateReason;
 
+  int _lastAlarmEventId = 0;
+  bool _alarmEventsCursorPrimed = false;
+
   // Getters
   SystemState get currentState => _currentState;
   List<Device> get devices => _devices;
@@ -152,6 +156,9 @@ class AlarmSystemProvider with ChangeNotifier {
 
     // Keep watching for alarm triggers so the app can notify immediately.
     _startSystemStatePolling();
+
+    // Prime alarm-events cursor so we don't notify for historical rows.
+    unawaited(_primeAlarmEventsCursor());
   }
 
   static int? _toIntOrNull(dynamic v) {
@@ -169,7 +176,6 @@ class AlarmSystemProvider with ChangeNotifier {
 
   Future<void> _pollSystemState() async {
     if (_apiService == null) return;
-    if (!(_connectionManager?.isOnline ?? false)) return;
     if (_systemStatePollInFlight) return;
 
     _systemStatePollInFlight = true;
@@ -185,27 +191,120 @@ class AlarmSystemProvider with ChangeNotifier {
       final changed = (newId != null && newId != _lastSystemStateId) ||
           (newId == null && newState != _currentState);
 
-      if (!changed) return;
+      if (changed) {
+        _lastSystemStateId = newId;
+        _lastSystemStateReason = reason;
+        _currentState = newState;
+        notifyListeners();
 
-      _lastSystemStateId = newId;
-      _lastSystemStateReason = reason;
-      _currentState = newState;
-      notifyListeners();
-
-      if (newState == SystemState.alarm && SettingsManager().alarmNotification) {
-        final body = (reason != null && reason.trim().isNotEmpty)
-            ? 'Triggered: $reason'
-            : 'Alarm triggered';
-        await NotificationService.instance.showAlarmTriggered(
-          title: 'ALARM',
-          body: body,
-        );
+        if (newState == SystemState.alarm && SettingsManager().alarmNotification) {
+          final body = (reason != null && reason.trim().isNotEmpty)
+              ? 'Triggered: $reason'
+              : 'Alarm triggered';
+          await NotificationService.instance.showAlarmTriggered(
+            title: 'ALARM',
+            body: body,
+          );
+        }
       }
+      // Also fetch alarm_events so sensor triggers can show rich notifications.
+      await _pollAlarmEvents();
     } catch (e) {
       // Don't surface polling failures as UI errors; it should be best-effort.
       print('❌ System state poll error: $e');
     } finally {
       _systemStatePollInFlight = false;
+    }
+  }
+
+  Future<void> _primeAlarmEventsCursor() async {
+    if (_alarmEventsCursorPrimed) return;
+    if (_apiService == null || _deviceUuid == null) return;
+    try {
+      final rows = await _apiService!.getAlarmEvents(
+        deviceUuid: _deviceUuid!,
+        latest: true,
+        limit: 1,
+      );
+      if (rows.isNotEmpty) {
+        final first = rows.first;
+        if (first is Map) {
+          final id = _toIntOrNull(first['id']);
+          if (id != null) _lastAlarmEventId = id;
+        }
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('Alarm events prime error: $e');
+    } finally {
+      _alarmEventsCursorPrimed = true;
+    }
+  }
+
+  Future<void> _pollAlarmEvents() async {
+    if (_apiService == null || _deviceUuid == null) return;
+    if (!_alarmEventsCursorPrimed) {
+      await _primeAlarmEventsCursor();
+      return;
+    }
+
+    try {
+      final rows = await _apiService!.getAlarmEvents(
+        deviceUuid: _deviceUuid!,
+        sinceId: _lastAlarmEventId,
+        limit: 20,
+      );
+      if (rows.isEmpty) return;
+
+      var shouldForceEnableNotifications = false;
+
+      for (final row in rows) {
+        if (row is! Map) continue;
+        final id = _toIntOrNull(row['id']);
+        if (id == null) continue;
+        if (id <= _lastAlarmEventId) continue;
+        _lastAlarmEventId = id;
+
+        final eventType = (row['event_type'] ?? '').toString().toUpperCase();
+        final zone = (row['zone'] ?? '').toString();
+        final message = (row['message'] ?? '').toString();
+        final ts = (row['created_at'] ?? DateTime.now().toIso8601String()).toString();
+
+        _activityLogs.insert(
+          0,
+          ActivityLog(
+            timestamp: ts,
+            event: eventType,
+            device: zone.isNotEmpty ? zone : 'Sensor',
+            user: 'System',
+          ),
+        );
+
+        if (eventType == 'SENSOR_TRIGGER' || eventType == 'ALARM_START' || eventType == 'ALARM_TRIGGER') {
+          shouldForceEnableNotifications = true;
+        }
+
+        if (eventType == 'SENSOR_TRIGGER') {
+          await NotificationService.instance.showAlarmTriggered(
+            title: 'SENSOR TRIGGER',
+            body: zone.isNotEmpty ? '$zone: $message' : message,
+          );
+        } else if (eventType == 'ALARM_START' || eventType == 'ALARM_TRIGGER') {
+          await NotificationService.instance.showAlarmTriggered(
+            title: 'ALARM',
+            body: zone.isNotEmpty ? '$zone: $message' : message,
+          );
+        }
+      }
+
+      if (shouldForceEnableNotifications) {
+        await SettingsManager().setAlarmNotification(true);
+      }
+
+      notifyListeners();
+    } catch (e) {
+      // ignore: avoid_print
+      print('Alarm events poll error: $e');
     }
   }
 
@@ -377,12 +476,6 @@ class AlarmSystemProvider with ChangeNotifier {
 
   }
 
-  @override
-  void dispose() {
-    _systemStatePollTimer?.cancel();
-    super.dispose();
-  }
-
   /// Trigger SOS alarm
   Future<void> triggerSOSAlarm() async {
     try {
@@ -474,6 +567,7 @@ class AlarmSystemProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _systemStatePollTimer?.cancel();
     _connectionManager?.dispose();
     super.dispose();
   }
