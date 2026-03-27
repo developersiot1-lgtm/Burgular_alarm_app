@@ -2309,8 +2309,105 @@ if (!$device) {
         }
     }
 
+    private function parseTimeToMinutes($value) {
+        $value = trim((string)$value);
+        if ($value === '') return null;
+        $parts = explode(':', $value);
+        if (count($parts) < 2) return null;
+        $h = intval($parts[0]);
+        $m = intval($parts[1]);
+        if ($h < 0 || $h > 23 || $m < 0 || $m > 59) return null;
+        return ($h * 60) + $m;
+    }
+
+    private function buildWindowTimestamp($dateYmd, $timeValue) {
+        // $timeValue can be "HH:MM" or "HH:MM:SS"
+        $t = trim((string)$timeValue);
+        if ($t === '') $t = '00:00:00';
+        if (strlen($t) === 5) $t .= ':00';
+        return strtotime($dateYmd . ' ' . $t);
+    }
+
+    private function computeScheduleStatus() {
+        // Global schedule evaluation (single-system): if any enabled schedule is active, desired is ARMED.
+        $now = time();
+        $todayYmd = date('Y-m-d', $now);
+        $yesterdayYmd = date('Y-m-d', strtotime('-1 day', $now));
+        $tomorrowYmd = date('Y-m-d', strtotime('+1 day', $now));
+        $todayIndex = intval(date('N', $now)) - 1; // 0=Mon..6=Sun
+        $yesterdayIndex = ($todayIndex + 6) % 7;
+        $nowMinutes = intval(date('G', $now)) * 60 + intval(date('i', $now));
+
+        $rows = $this->db->fetchAll(
+            "SELECT schedule_name, start_time, end_time, active_days
+             FROM alarm_schedules
+             WHERE is_enabled = 1"
+        );
+
+        foreach ($rows as $row) {
+            $startMin = $this->parseTimeToMinutes($row['start_time'] ?? '');
+            $endMin = $this->parseTimeToMinutes($row['end_time'] ?? '');
+            if ($startMin === null || $endMin === null) {
+                continue;
+            }
+
+            $days = json_decode($row['active_days'] ?? '[]', true);
+            if (!is_array($days)) $days = [];
+            $days = array_map('intval', $days);
+
+            $isOvernight = ($startMin > $endMin);
+            $active = false;
+            $windowStart = null;
+            $windowEnd = null;
+
+            if (!$isOvernight) {
+                // Same-day window.
+                if (in_array($todayIndex, $days, true) && $nowMinutes >= $startMin && $nowMinutes < $endMin) {
+                    $active = true;
+                    $windowStart = $this->buildWindowTimestamp($todayYmd, $row['start_time']);
+                    $windowEnd = $this->buildWindowTimestamp($todayYmd, $row['end_time']);
+                }
+            } else {
+                // Overnight window spans midnight.
+                if ($nowMinutes >= $startMin) {
+                    // Evening part: day must match "today".
+                    if (in_array($todayIndex, $days, true)) {
+                        $active = true;
+                        $windowStart = $this->buildWindowTimestamp($todayYmd, $row['start_time']);
+                        $windowEnd = $this->buildWindowTimestamp($tomorrowYmd, $row['end_time']);
+                    }
+                } else {
+                    // Morning part: day must match "yesterday" (schedule started yesterday).
+                    if (in_array($yesterdayIndex, $days, true)) {
+                        $active = true;
+                        $windowStart = $this->buildWindowTimestamp($yesterdayYmd, $row['start_time']);
+                        $windowEnd = $this->buildWindowTimestamp($todayYmd, $row['end_time']);
+                    }
+                }
+            }
+
+            if ($active) {
+                return [
+                    'active' => true,
+                    'schedule_name' => $row['schedule_name'] ?? '',
+                    'desired_state' => 'armed',
+                    'window_start' => $windowStart,
+                    'window_end' => $windowEnd,
+                ];
+            }
+        }
+
+        return [
+            'active' => false,
+            'schedule_name' => '',
+            'desired_state' => 'disarmed',
+            'window_start' => null,
+            'window_end' => null,
+        ];
+    }
+
     private function getSystemState() {
-        $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY updated_at DESC LIMIT 1");
+        $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1");
         if (!$state) {
             $defaultState = [
                 'state' => 'disarmed',
@@ -2318,8 +2415,51 @@ if (!$device) {
                 'updated_by' => 'system'
             ];
             $this->db->insert('system_state', $defaultState);
-            $state = $defaultState;
+            $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1") ?: $defaultState;
         }
+
+        // Schedule automation: arm/disarm based on active window, but do not fight manual override.
+        $sched = $this->computeScheduleStatus();
+        $currentUpdatedAt = isset($state['updated_at']) ? strtotime($state['updated_at']) : 0;
+        $currentUpdatedBy = $state['updated_by'] ?? '';
+        $currentState = $state['state'] ?? 'disarmed';
+
+        if ($sched['active']) {
+            // Auto-arm only if there has been no manual update since the schedule window started.
+            if ($currentState !== 'armed' && is_int($sched['window_start']) && $currentUpdatedAt < $sched['window_start']) {
+                $this->db->insert('system_state', [
+                    'state' => 'armed',
+                    'previous_state' => $currentState,
+                    'updated_at' => date('Y-m-d H:i:s'),
+                    'updated_by' => 'SCHEDULE',
+                    'reason' => ($sched['schedule_name'] !== '' ? ('Schedule: ' . $sched['schedule_name']) : 'Schedule: active'),
+                ]);
+                $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1") ?: $state;
+                $currentState = $state['state'] ?? $currentState;
+                $currentUpdatedBy = $state['updated_by'] ?? $currentUpdatedBy;
+                $currentUpdatedAt = isset($state['updated_at']) ? strtotime($state['updated_at']) : $currentUpdatedAt;
+            }
+        } else {
+            // Auto-disarm only if schedule previously set the state (avoid overriding manual arm outside schedule).
+            if ($currentState !== 'disarmed' && $currentUpdatedBy === 'SCHEDULE') {
+                $this->db->insert('system_state', [
+                    'state' => 'disarmed',
+                    'previous_state' => $currentState,
+                    'updated_at' => date('Y-m-d H:i:s'),
+                    'updated_by' => 'SCHEDULE',
+                    'reason' => 'Schedule: inactive',
+                ]);
+                $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1") ?: $state;
+            }
+        }
+
+        // Add schedule debug fields for the app (non-breaking: extra JSON keys).
+        $state['schedule_active'] = (bool)$sched['active'];
+        $state['schedule_name'] = $sched['schedule_name'];
+        $state['schedule_desired_state'] = $sched['desired_state'];
+        $state['schedule_window_start'] = $sched['window_start'] ? date('Y-m-d H:i:s', $sched['window_start']) : null;
+        $state['schedule_window_end'] = $sched['window_end'] ? date('Y-m-d H:i:s', $sched['window_end']) : null;
+
         $this->sendResponse($state);
     }
 
