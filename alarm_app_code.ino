@@ -1478,8 +1478,10 @@ void reportTriggeredSensorToSystemState(const String &triggeredSensor) {
   String payload = "{";
   payload += "\"device_uuid\":\"" + jsonEscape(deviceUuid()) + "\",";
   payload += "\"state\":\"alarm\",";
+  payload += "\"user\":\"HUB\",";
   payload += "\"triggered_sensor\":\"" + jsonEscape(triggeredSensor) + "\",";
-  payload += "\"alarm_reason\":\"" + jsonEscape(triggeredSensor) + "\"";
+  payload += "\"alarm_reason\":\"" + jsonEscape(triggeredSensor) + "\",";
+  payload += "\"reason\":\"" + jsonEscape(triggeredSensor) + "\"";
   payload += "}";
 
   Serial.printf("[STATE] POST %s\n", SYSTEM_STATE_URL);

@@ -2337,10 +2337,25 @@ if (!$device) {
             return;
         }
 
+        $prev = $this->db->fetchOne("SELECT state FROM system_state ORDER BY id DESC LIMIT 1");
+        $reason = null;
+        if (isset($input['reason']) && is_string($input['reason'])) {
+            $reason = trim($input['reason']);
+        } elseif (isset($input['alarm_reason']) && is_string($input['alarm_reason'])) {
+            $reason = trim($input['alarm_reason']);
+        } elseif (isset($input['triggered_sensor']) && is_string($input['triggered_sensor'])) {
+            $reason = trim($input['triggered_sensor']);
+        }
+        if ($reason === '') {
+            $reason = null;
+        }
+
         $stateData = [
             'state' => $input['state'],
+            'previous_state' => $prev['state'] ?? null,
             'updated_at' => date('Y-m-d H:i:s'),
-            'updated_by' => $input['user'] ?? 'api'
+            'updated_by' => $input['user'] ?? 'api',
+            'reason' => $reason,
         ];
 
         $this->db->insert('system_state', $stateData);

@@ -8,6 +8,7 @@ import 'device_registry_service.dart';
 import 'settings_manager.dart';
 import 'auth_service.dart';       // ← NEW
 import 'polygon_background.dart';
+import 'notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +23,9 @@ void main() async {
   // Initialize settings
   final settingsManager = SettingsManager();
   await settingsManager.initialize();
+
+  // Local notifications (alarm alerts)
+  await NotificationService.instance.init();
 
   // ── Load saved auth session ──────────────────────────────────
   // (SplashScreen also calls this, but loading here means

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'api_service.dart';
 import 'offline_manager.dart';
 import 'connection_manager.dart';
+import 'notification_service.dart';
+import 'settings_manager.dart';
 
 /// System states
 enum SystemState {
@@ -109,6 +111,11 @@ class AlarmSystemProvider with ChangeNotifier {
   bool _isOfflineMode = false;
   bool _isSOSMode = false;
 
+  Timer? _systemStatePollTimer;
+  bool _systemStatePollInFlight = false;
+  int? _lastSystemStateId;
+  String? _lastSystemStateReason;
+
   // Getters
   SystemState get currentState => _currentState;
   List<Device> get devices => _devices;
@@ -142,6 +149,64 @@ class AlarmSystemProvider with ChangeNotifier {
 
     // Load initial data
     await loadData();
+
+    // Keep watching for alarm triggers so the app can notify immediately.
+    _startSystemStatePolling();
+  }
+
+  static int? _toIntOrNull(dynamic v) {
+    if (v is int) return v;
+    if (v is String) return int.tryParse(v);
+    return null;
+  }
+
+  void _startSystemStatePolling() {
+    _systemStatePollTimer?.cancel();
+    _systemStatePollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _pollSystemState();
+    });
+  }
+
+  Future<void> _pollSystemState() async {
+    if (_apiService == null) return;
+    if (!(_connectionManager?.isOnline ?? false)) return;
+    if (_systemStatePollInFlight) return;
+
+    _systemStatePollInFlight = true;
+    try {
+      final stateData = await _apiService!.getSystemState();
+      if (stateData == null) return;
+
+      final newId = _toIntOrNull(stateData['id']);
+      final newState = _parseSystemState(stateData['state']);
+      final reasonRaw = stateData['reason'] ?? stateData['alarm_reason'] ?? stateData['triggered_sensor'];
+      final reason = reasonRaw?.toString();
+
+      final changed = (newId != null && newId != _lastSystemStateId) ||
+          (newId == null && newState != _currentState);
+
+      if (!changed) return;
+
+      _lastSystemStateId = newId;
+      _lastSystemStateReason = reason;
+      _currentState = newState;
+      notifyListeners();
+
+      if (newState == SystemState.alarm && SettingsManager().alarmNotification) {
+        final body = (reason != null && reason.trim().isNotEmpty)
+            ? 'Triggered: $reason'
+            : 'Alarm triggered';
+        await NotificationService.instance.showAlarmTriggered(
+          title: 'ALARM',
+          body: body,
+        );
+      }
+    } catch (e) {
+      // Don't surface polling failures as UI errors; it should be best-effort.
+      print('❌ System state poll error: $e');
+    } finally {
+      _systemStatePollInFlight = false;
+    }
   }
 
   /// Load data from server or offline storage
@@ -190,6 +255,9 @@ class AlarmSystemProvider with ChangeNotifier {
     final stateData = await _apiService!.getSystemState();
     if (stateData != null && stateData['state'] != null) {
       _currentState = _parseSystemState(stateData['state']);
+      _lastSystemStateId = _toIntOrNull(stateData['id']);
+      _lastSystemStateReason =
+          (stateData['reason'] ?? stateData['alarm_reason'] ?? stateData['triggered_sensor'])?.toString();
     }
 
     // Get devices
@@ -307,6 +375,12 @@ class AlarmSystemProvider with ChangeNotifier {
       notifyListeners();
     }
 
+  }
+
+  @override
+  void dispose() {
+    _systemStatePollTimer?.cancel();
+    super.dispose();
   }
 
   /// Trigger SOS alarm
