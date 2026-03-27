@@ -311,7 +311,7 @@ class AlarmSystemProvider with ChangeNotifier {
       notifyListeners();
     } catch (e) {
       // ignore: avoid_print
-      print('Alarm events poll error: $e');
+      print('Alarm events poll error (uuid=$_deviceUuid, since=$_lastAlarmEventId): $e');
     }
   }
 

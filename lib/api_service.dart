@@ -303,7 +303,11 @@ class ApiService {
         '$baseUrl?action=alarm_events&device_uuid=${Uri.encodeComponent(deviceUuid)}&since_id=$sid&limit=$limit&latest=${latest ? 1 : 0}',
       );
       final response = await http.get(uri).timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) return [];
+      if (response.statusCode != 200) {
+        // ignore: avoid_print
+        print('getAlarmEvents bad status=${response.statusCode} body=${response.body}');
+        return [];
+      }
 
       final data = json.decode(response.body);
       final events = data['events'];

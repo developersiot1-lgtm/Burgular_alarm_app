@@ -221,9 +221,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
         final settings = SettingsManager();
         _hubDeviceUuid  = settings.connectedDeviceUuid;
-        final hubUuid = (_hubDeviceUuid != null && _hubDeviceUuid!.isNotEmpty)
-            ? _hubDeviceUuid!
-            : mobileDeviceUuid;
+        String hubUuid;
+        if (_hubDeviceUuid != null && _hubDeviceUuid!.isNotEmpty) {
+          hubUuid = _hubDeviceUuid!;
+        } else {
+          // If user didn't explicitly select a device yet, auto-select the first
+          // hub device linked to the logged-in account so alarm_events match.
+          final userDevices = await AuthService().getUserDevices();
+          if (userDevices.isNotEmpty) {
+            final first = userDevices.first;
+            final uuid = (first['device_uuid'] ?? '').toString();
+            if (uuid.isNotEmpty) {
+              hubUuid = uuid;
+              await settings.setConnectedDeviceUuid(hubUuid);
+              _hubDeviceUuid = hubUuid;
+            } else {
+              hubUuid = mobileDeviceUuid;
+            }
+          } else {
+            hubUuid = mobileDeviceUuid;
+          }
+        }
 
         // IMPORTANT: Alarm system control + polling must use the HUB/ESP32 UUID,
         // not the phone's hardware id. Otherwise alarm_events and arm/disarm won't match.
