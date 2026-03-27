@@ -1113,16 +1113,47 @@ private function syncSettingsToDevice() {
 
 // ── Step 2: Get latest settings from settings_sync_log ────────────
 // Single source of truth — Flutter always writes here via saveSettings()
-$syncRow = $this->db->fetchOne(
-    "SELECT id, synced_at, settings_json
-     FROM settings_sync_log
-     WHERE device_uuid = ?
-       AND sync_type = 'upload'
-       AND sync_status = 'success'
-     ORDER BY id DESC
-     LIMIT 1",
-    [$device_uuid]
-);
+$resolved_uuid = $device_uuid;
+
+$buildAltUuid = function (string $uuid, int $delta): string {
+    $hex = strtoupper($uuid);
+    $hex = preg_replace('/[^0-9A-F]/', '', $hex);
+    if (strlen($hex) !== 12) {
+        return '';
+    }
+    $bytes = str_split($hex, 2);
+    $last = hexdec($bytes[5]);
+    $bytes[5] = sprintf('%02X', ($last + $delta) & 0xFF);
+    return implode(':', $bytes);
+};
+
+$uuidsToTry = [
+    $device_uuid,
+    $buildAltUuid($device_uuid, 2),
+    $buildAltUuid($device_uuid, -2),
+];
+
+$syncRow = null;
+foreach ($uuidsToTry as $candidate) {
+    if (!$candidate) {
+        continue;
+    }
+    $row = $this->db->fetchOne(
+        "SELECT id, device_uuid, synced_at, settings_json
+         FROM settings_sync_log
+         WHERE device_uuid = ?
+           AND sync_type = 'upload'
+           AND sync_status = 'success'
+         ORDER BY id DESC
+         LIMIT 1",
+        [$candidate]
+    );
+    if ($row && !empty($row['settings_json'])) {
+        $syncRow = $row;
+        $resolved_uuid = $candidate;
+        break;
+    }
+}
 
 if (!$syncRow || empty($syncRow['settings_json'])) {
     // No settings saved yet — return safe defaults
@@ -1230,6 +1261,7 @@ if (!$syncRow || empty($syncRow['settings_json'])) {
         $this->sendResponse([
             'success'       => true,
             'device_uuid'   => $device_uuid,
+            'resolved_device_uuid' => $resolved_uuid,
             'device_name'   => $device_name,
             'settings_source' => 'settings_sync_log',
             'sync_log_id'   => $syncRow['id'] ?? null,
