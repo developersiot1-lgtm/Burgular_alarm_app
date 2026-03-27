@@ -33,6 +33,9 @@ migrate_working_dir/
 .pub/
 /build/
 
+# Server config (contains secrets)
+/server/config.php
+
 # Symbolication related
 app.*.symbols
 

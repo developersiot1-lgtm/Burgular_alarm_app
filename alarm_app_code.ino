@@ -204,6 +204,67 @@ void clearContactNumbers() {
   callNumberCount = 0;
 }
 
+bool isValidStoredContactNumber(const char *value) {
+  if (!value) return false;
+  size_t len = strlen(value);
+  if (len == 0) return false;
+
+  int digits = 0;
+  for (size_t i = 0; i < len; i++) {
+    char c = value[i];
+    if (c >= '0' && c <= '9') {
+      digits++;
+      continue;
+    }
+    if (c == '+' && i == 0) {
+      continue;
+    }
+    return false;
+  }
+  return digits >= 10;
+}
+
+void sanitizeContactNumbers() {
+  uint8_t oldSms = smsNumberCount;
+  uint8_t oldCall = callNumberCount;
+
+  // Compact SMS numbers.
+  uint8_t writeIndex = 0;
+  for (uint8_t i = 0; i < smsNumberCount; i++) {
+    if (!isValidStoredContactNumber(smsNumbers[i])) {
+      continue;
+    }
+    if (writeIndex != i) {
+      snprintf(smsNumbers[writeIndex], CONTACT_NUMBER_LEN, "%s", smsNumbers[i]);
+    }
+    writeIndex++;
+  }
+  for (uint8_t i = writeIndex; i < smsNumberCount; i++) {
+    smsNumbers[i][0] = '\0';
+  }
+  smsNumberCount = writeIndex;
+
+  // Compact CALL numbers.
+  writeIndex = 0;
+  for (uint8_t i = 0; i < callNumberCount; i++) {
+    if (!isValidStoredContactNumber(callNumbers[i])) {
+      continue;
+    }
+    if (writeIndex != i) {
+      snprintf(callNumbers[writeIndex], CONTACT_NUMBER_LEN, "%s", callNumbers[i]);
+    }
+    writeIndex++;
+  }
+  for (uint8_t i = writeIndex; i < callNumberCount; i++) {
+    callNumbers[i][0] = '\0';
+  }
+  callNumberCount = writeIndex;
+
+  if (oldSms != smsNumberCount || oldCall != callNumberCount) {
+    Serial.printf("[CONTACTS] Sanitized cached contacts: SMS %u->%u CALL %u->%u\n", oldSms, smsNumberCount, oldCall, callNumberCount);
+  }
+}
+
 bool copyContactNumber(char dest[CONTACT_NUMBER_LEN], const String &value) {
   String input = value;
   input.trim();
@@ -515,6 +576,7 @@ void applyContactNumbersFromSettingsPayload(const String &settingsBody) {
     // If the server didn't provide any numbers (or they are empty), keep the
     // current cached numbers instead of clearing them.
     Serial.println("[CONTACTS] No numbers in settings_json; keeping existing cached numbers");
+    sanitizeContactNumbers();
     logContactNumbers();
     return;
   }
@@ -528,6 +590,7 @@ void applyContactNumbersFromSettingsPayload(const String &settingsBody) {
   }
   smsNumberCount = newSmsCount;
   callNumberCount = newCallCount;
+  sanitizeContactNumbers();
   logContactNumbers();
 }
 
@@ -563,6 +626,7 @@ void loadCachedSettingsFromPreferences() {
   Serial.println("[SETTINGS] Loaded cached settings from EEPROM");
   applySettingsPayload(cachedSettingsJson);
   applyContactNumbersFromSettingsPayload(cachedSettingsJson);
+  sanitizeContactNumbers();
 }
 
 void fetchSettingsFromServer() {
