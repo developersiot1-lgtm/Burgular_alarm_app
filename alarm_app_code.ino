@@ -79,6 +79,12 @@ static const char *BLE_SERVICE_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E2";
 static const char *BLE_RX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E3";
 static const char *BLE_TX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E4";
 static const bool CLEAR_WIFI_ON_EVERY_BOOT = false;
+static const bool ERASE_ALL_NVS_ON_RESET_BUTTON = true;
+
+// RTC memory survives RESET (EN) but is cleared on a real power cut.
+// This lets us differentiate "button reset" vs "power off/on".
+RTC_DATA_ATTR uint32_t rtcWarmResetMarker = 0;
+static const uint32_t RTC_WARM_RESET_MAGIC = 0xB16B00B5UL;
 
 // Poll interval for app/server arm-disarm state.
 static const unsigned long STATE_POLL_MS = 500;
@@ -1985,9 +1991,12 @@ void setup() {
   Serial.println("================================");
 
   // Keep NVS ("EEPROM") across power cycles, but wipe everything when the RESET/EN button is pressed.
-  // This makes factory reset easy without losing learned sensors on power cuts.
+  // Note: many ESP32 dev boards treat EN reset like a power-on reset. We use an RTC marker to detect it.
   esp_reset_reason_t resetReason = esp_reset_reason();
-  Serial.printf("[BOOT] Reset reason=%d\n", static_cast<int>(resetReason));
+  const bool warmReset = (rtcWarmResetMarker == RTC_WARM_RESET_MAGIC);
+  Serial.printf("[BOOT] Reset reason=%d warm_reset=%s\n",
+                static_cast<int>(resetReason),
+                warmReset ? "YES" : "NO");
 
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
@@ -2005,14 +2014,18 @@ void setup() {
   rf.enableReceive(RF_PIN);
   Serial.printf("[RF] Receiver enabled on GPIO %d\n", RF_PIN);
 
-  if (resetReason == ESP_RST_EXT) {
-    Serial.println("[BOOT] External reset detected, erasing ALL NVS data");
+  if (ERASE_ALL_NVS_ON_RESET_BUTTON && warmReset && resetReason != ESP_RST_DEEPSLEEP) {
+    Serial.println("[BOOT] RESET button (warm reset) detected, erasing ALL NVS data");
     clearAllStoredData();
   } else if (CLEAR_WIFI_ON_EVERY_BOOT) {
     clearAllStoredData();
   } else {
     loadWifiCredentials();
   }
+
+  // Mark boot as "warm" for the next reset. This marker is cleared on power loss.
+  rtcWarmResetMarker = RTC_WARM_RESET_MAGIC;
+
   loadLearnedRfItems();
   loadCachedSettingsFromPreferences();
   if (!wifiProvisioned) {
