@@ -10,6 +10,7 @@
 #include <TinyGsmClient.h>
 #include <RCSwitch.h>
 #include <nvs_flash.h>
+#include <esp_system.h>
 
 // -------------------------------------------------------------------
 // Basic hardware
@@ -73,11 +74,11 @@ static const char *PREF_NAMESPACE = "alarmcfg";
 static const char *PREF_WIFI_SSID = "wifi_ssid";
 static const char *PREF_WIFI_PASS = "wifi_pass";
 static const char *PREF_SETTINGS_CACHE = "set_cache";
-static const char *BLE_DEVICE_NAME = "ESP32_ALARM_SETUP";
+static const char *BLE_DEVICE_NAME = "MONSOW_312603";
 static const char *BLE_SERVICE_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E2";
 static const char *BLE_RX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E3";
 static const char *BLE_TX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E4";
-static const bool CLEAR_WIFI_ON_EVERY_BOOT = true;
+static const bool CLEAR_WIFI_ON_EVERY_BOOT = false;
 
 // Poll interval for app/server arm-disarm state.
 static const unsigned long STATE_POLL_MS = 500;
@@ -1983,6 +1984,11 @@ void setup() {
   Serial.println("[BOOT] APP ARM/DISARM ONLY SKETCH");
   Serial.println("================================");
 
+  // Keep NVS ("EEPROM") across power cycles, but wipe everything when the RESET/EN button is pressed.
+  // This makes factory reset easy without losing learned sensors on power cuts.
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  Serial.printf("[BOOT] Reset reason=%d\n", static_cast<int>(resetReason));
+
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
@@ -1999,7 +2005,10 @@ void setup() {
   rf.enableReceive(RF_PIN);
   Serial.printf("[RF] Receiver enabled on GPIO %d\n", RF_PIN);
 
-  if (CLEAR_WIFI_ON_EVERY_BOOT) {
+  if (resetReason == ESP_RST_EXT) {
+    Serial.println("[BOOT] External reset detected, erasing ALL NVS data");
+    clearAllStoredData();
+  } else if (CLEAR_WIFI_ON_EVERY_BOOT) {
     clearAllStoredData();
   } else {
     loadWifiCredentials();
@@ -2033,28 +2042,3 @@ void loop() {
   updateAlarmBuzzer();
   delay(50);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
