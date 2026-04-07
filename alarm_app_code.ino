@@ -33,8 +33,10 @@ static const int RF_PIN = 35;
 
 // Manual wired door zones. Set unused pins to -1.
 static const int DOOR_ZONE_PINS[] = {
-  19, 18, 5,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
+  // First 10 wired zones (edit these GPIOs to match your wiring).
+  19, 18, 5, 21, 23, 25, 26, 27, 32, 33,
+  // Remaining zones disabled.
+  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 };
 static const char *DOOR_ZONE_NAMES[] = {
   "DOOR 1",
@@ -78,7 +80,7 @@ static const char *BLE_DEVICE_NAME = "MONSOW_312603";
 static const char *BLE_SERVICE_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E2";
 static const char *BLE_RX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E3";
 static const char *BLE_TX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E4";
-static const bool CLEAR_WIFI_ON_EVERY_BOOT = false;
+static const bool CLEAR_WIFI_ON_EVERY_BOOT = true;
 static const bool ERASE_ALL_NVS_ON_RESET_BUTTON = true;
 
 // RTC memory survives RESET (EN) but is cleared on a real power cut.
@@ -90,6 +92,12 @@ static const uint32_t RTC_WARM_RESET_MAGIC = 0xB16B00B5UL;
 static const unsigned long STATE_POLL_MS = 500;
 static const unsigned long MODEM_NETWORK_TIMEOUT_MS = 15000;
 static const unsigned long RF_PAIR_WINDOW_MS = 30000;
+
+// With INPUT_PULLUP and a reed switch to GND:
+// door CLOSED (magnet near)  -> pin LOW
+// door OPEN   (magnet away)  -> pin HIGH
+static const int DOOR_OPEN_STATE = HIGH;
+static const int DOOR_CLOSED_STATE = LOW;
 
 // -------------------------------------------------------------------
 // Contact numbers synced from server
@@ -1939,7 +1947,8 @@ void pollDoorZones() {
     if (DOOR_ZONE_PINS[i] < 0) continue;
 
     int state = digitalRead(DOOR_ZONE_PINS[i]);
-    if (currentMode != MODE_DISARMED && lastDoorZoneState[i] == HIGH && state == LOW) {
+    // Trigger only when the door changes from CLOSED to OPEN.
+    if (currentMode != MODE_DISARMED && lastDoorZoneState[i] == DOOR_CLOSED_STATE && state == DOOR_OPEN_STATE) {
       handleDoorTrigger(DOOR_ZONE_NAMES[i]);
     }
     lastDoorZoneState[i] = state;
