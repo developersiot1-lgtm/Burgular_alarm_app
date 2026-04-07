@@ -101,6 +101,10 @@ static const uint32_t RTC_WARM_RESET_MAGIC = 0xB16B00B5UL;
 static const unsigned long STATE_POLL_MS = 500;
 static const unsigned long MODEM_NETWORK_TIMEOUT_MS = 15000;
 static const unsigned long RF_PAIR_WINDOW_MS = 30000;
+static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
+static const unsigned long WIFI_RETRY_ONLINE_MS = 2000;
+static const unsigned long WIFI_RETRY_OFFLINE_MS = 30000;
+static const bool START_BLE_PROVISIONING_ON_WIFI_FAIL = false;
 
 // With INPUT_PULLUP and a reed switch to GND:
 // door CLOSED (magnet near)  -> pin LOW
@@ -205,6 +209,8 @@ String lastServerState = "disarmed";
 unsigned long lastStatePollAt = 0;
 unsigned long lastAlarmActionAt = 0;
 unsigned long lastWiFiAttemptAt = 0;
+bool offlineMode = false;
+unsigned long offlineModeSinceAt = 0;
 bool alarmOutputsEnabled = false;
 int lastDoorZoneState[DOOR_ZONE_COUNT];
 uint16_t settingExitDelaySeconds = 0;
@@ -236,6 +242,17 @@ void clearContactNumbers() {
   memset(callNumbers, 0, sizeof(callNumbers));
   smsNumberCount = 0;
   callNumberCount = 0;
+}
+
+void setOfflineMode(bool on, const char *reason) {
+  if (offlineMode == on) return;
+  offlineMode = on;
+  offlineModeSinceAt = on ? millis() : 0;
+  Serial.printf("[OFFLINE] %s (%s)\n", on ? "ENABLED" : "DISABLED", reason ? reason : "");
+  if (wifiTxCharacteristic) {
+    wifiTxCharacteristic->setValue(on ? "OFFLINE_MODE" : "ONLINE_MODE");
+    wifiTxCharacteristic->notify();
+  }
 }
 
 bool isValidStoredContactNumber(const char *value) {
@@ -1790,6 +1807,7 @@ void pollSystemState() {
 void connectWiFi() {
   if (!wifiProvisioned) {
     Serial.println("[WIFI] No credentials stored");
+    setOfflineMode(true, "no_credentials");
     return;
   }
 
@@ -1799,7 +1817,7 @@ void connectWiFi() {
   WiFi.begin(provisionedSsid.c_str(), provisionedPassword.c_str());
 
   unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
     delay(500);
     Serial.print(".");
   }
@@ -1807,6 +1825,7 @@ void connectWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WIFI] Connected IP=%s\n", WiFi.localIP().toString().c_str());
+    setOfflineMode(false, "wifi_connected");
     if (wifiTxCharacteristic) {
       wifiTxCharacteristic->setValue("WIFI_CONNECTED");
       wifiTxCharacteristic->notify();
@@ -1815,11 +1834,14 @@ void connectWiFi() {
     fetchSettingsFromServer();
   } else {
     Serial.println("[WIFI] Connection failed");
+    setOfflineMode(true, "wifi_failed");
     if (wifiTxCharacteristic) {
       wifiTxCharacteristic->setValue("WIFI_FAILED");
       wifiTxCharacteristic->notify();
     }
-    startBleProvisioning();
+    if (START_BLE_PROVISIONING_ON_WIFI_FAIL) {
+      startBleProvisioning();
+    }
   }
 }
 
@@ -2089,7 +2111,8 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > 1000) {
+  unsigned long wifiRetryMs = offlineMode ? WIFI_RETRY_OFFLINE_MS : WIFI_RETRY_ONLINE_MS;
+  if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > wifiRetryMs) {
     connectWiFi();
   }
   if (WiFi.status() == WL_CONNECTED && millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
