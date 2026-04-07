@@ -105,6 +105,10 @@ static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 static const unsigned long WIFI_RETRY_ONLINE_MS = 2000;
 static const unsigned long WIFI_RETRY_OFFLINE_MS = 30000;
 static const bool START_BLE_PROVISIONING_ON_WIFI_FAIL = false;
+static const unsigned long HTTP_TIMEOUT_MS = 2500;
+static const uint8_t SERVER_OFFLINE_AFTER_FAILS = 3;
+static const unsigned long SERVER_OFFLINE_RETRY_MS = 30000;
+static const bool AUTO_ARM_ON_SERVER_OFFLINE = false;
 
 // With INPUT_PULLUP and a reed switch to GND:
 // door CLOSED (magnet near)  -> pin LOW
@@ -211,6 +215,10 @@ unsigned long lastAlarmActionAt = 0;
 unsigned long lastWiFiAttemptAt = 0;
 bool offlineMode = false;
 unsigned long offlineModeSinceAt = 0;
+bool serverOnline = true;
+uint8_t serverFailCount = 0;
+unsigned long lastServerOkAt = 0;
+unsigned long nextServerRetryAt = 0;
 bool alarmOutputsEnabled = false;
 int lastDoorZoneState[DOOR_ZONE_COUNT];
 uint16_t settingExitDelaySeconds = 0;
@@ -252,6 +260,50 @@ void setOfflineMode(bool on, const char *reason) {
   if (wifiTxCharacteristic) {
     wifiTxCharacteristic->setValue(on ? "OFFLINE_MODE" : "ONLINE_MODE");
     wifiTxCharacteristic->notify();
+  }
+}
+
+bool allowServerRequests() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+  if (!serverOnline && nextServerRetryAt > 0 && millis() < nextServerRetryAt) {
+    return false;
+  }
+  return true;
+}
+
+void noteServerOk() {
+  lastServerOkAt = millis();
+  serverFailCount = 0;
+  if (!serverOnline) {
+    serverOnline = true;
+    nextServerRetryAt = 0;
+    Serial.println("[SERVER] ONLINE");
+    if (wifiTxCharacteristic) {
+      wifiTxCharacteristic->setValue("SERVER_ONLINE");
+      wifiTxCharacteristic->notify();
+    }
+  }
+}
+
+void noteServerFail(const char *tag, int status) {
+  (void)tag;
+  (void)status;
+  serverFailCount = (serverFailCount < 250) ? (serverFailCount + 1) : serverFailCount;
+  if (serverOnline && serverFailCount >= SERVER_OFFLINE_AFTER_FAILS) {
+    serverOnline = false;
+    nextServerRetryAt = millis() + SERVER_OFFLINE_RETRY_MS;
+    Serial.printf("[SERVER] OFFLINE (failures=%u)\n", serverFailCount);
+    if (wifiTxCharacteristic) {
+      wifiTxCharacteristic->setValue("SERVER_OFFLINE");
+      wifiTxCharacteristic->notify();
+    }
+    if (AUTO_ARM_ON_SERVER_OFFLINE && currentMode == MODE_DISARMED) {
+      setMode(MODE_ARMED, "SERVER OFFLINE");
+    }
+  } else if (!serverOnline) {
+    nextServerRetryAt = millis() + SERVER_OFFLINE_RETRY_MS;
   }
 }
 
@@ -681,11 +733,12 @@ void loadCachedSettingsFromPreferences() {
 }
 
 void fetchSettingsFromServer() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!allowServerRequests()) {
     return;
   }
 
   HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
   String url = String(SETTINGS_URL_BASE) + deviceUuid() + "&device_name=" + deviceName();
   Serial.printf("[SETTINGS] GET %s\n", url.c_str());
   http.begin(url);
@@ -696,8 +749,10 @@ void fetchSettingsFromServer() {
   http.end();
 
   if (status != 200) {
+    noteServerFail("settings", status);
     return;
   }
+  noteServerOk();
 
   String settingsBody = resolveSettingsPayload(body);
   if (settingsBody.length() == 0) {
@@ -1777,7 +1832,7 @@ void handleServerState(const String &state) {
 }
 
 void pollSystemState() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!allowServerRequests()) {
     return;
   }
 
@@ -1788,9 +1843,11 @@ void pollSystemState() {
   lastStatePollAt = now;
 
   HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT_MS);
   http.begin(SYSTEM_STATE_URL);
   int status = http.GET();
   if (status == 200) {
+    noteServerOk();
     String body = http.getString();
     String state = extractJsonString(body, "state");
     if (state.length() > 0) {
@@ -1800,6 +1857,7 @@ void pollSystemState() {
     }
   } else {
     Serial.printf("[SYNC] HTTP GET failed status=%d\n", status);
+    noteServerFail("system_state", status);
   }
   http.end();
 }
