@@ -108,7 +108,8 @@ static const bool START_BLE_PROVISIONING_ON_WIFI_FAIL = false;
 static const unsigned long HTTP_TIMEOUT_MS = 2500;
 static const uint8_t SERVER_OFFLINE_AFTER_FAILS = 3;
 static const unsigned long SERVER_OFFLINE_RETRY_MS = 30000;
-static const bool AUTO_ARM_ON_SERVER_OFFLINE = false;
+static const bool AUTO_ARM_ON_SERVER_OFFLINE = true;
+static const unsigned long AUTO_ARM_DELAY_MS = 15000;
 
 // With INPUT_PULLUP and a reed switch to GND:
 // door CLOSED (magnet near)  -> pin LOW
@@ -219,6 +220,9 @@ bool serverOnline = true;
 uint8_t serverFailCount = 0;
 unsigned long lastServerOkAt = 0;
 unsigned long nextServerRetryAt = 0;
+bool autoArmScheduled = false;
+bool autoArmDone = false;
+unsigned long autoArmDueAt = 0;
 bool alarmOutputsEnabled = false;
 int lastDoorZoneState[DOOR_ZONE_COUNT];
 uint16_t settingExitDelaySeconds = 0;
@@ -257,10 +261,53 @@ void setOfflineMode(bool on, const char *reason) {
   offlineMode = on;
   offlineModeSinceAt = on ? millis() : 0;
   Serial.printf("[OFFLINE] %s (%s)\n", on ? "ENABLED" : "DISABLED", reason ? reason : "");
+  if (on) {
+    scheduleAutoArmIfNeeded(reason);
+  } else {
+    cancelAutoArmSchedule();
+  }
   if (wifiTxCharacteristic) {
     wifiTxCharacteristic->setValue(on ? "OFFLINE_MODE" : "ONLINE_MODE");
     wifiTxCharacteristic->notify();
   }
+}
+
+void cancelAutoArmSchedule() {
+  autoArmScheduled = false;
+  autoArmDueAt = 0;
+}
+
+void scheduleAutoArmIfNeeded(const char *reason) {
+  if (!AUTO_ARM_ON_SERVER_OFFLINE) return;
+  if (autoArmDone || autoArmScheduled) return;
+  if (currentMode != MODE_DISARMED) return;
+  autoArmScheduled = true;
+  autoArmDueAt = millis() + AUTO_ARM_DELAY_MS;
+  Serial.printf("[OFFLINE] Auto-arm scheduled in %lu ms (%s)\n",
+                static_cast<unsigned long>(AUTO_ARM_DELAY_MS),
+                reason ? reason : "");
+}
+
+void serviceAutoArmSchedule() {
+  if (!autoArmScheduled || autoArmDueAt == 0) return;
+  if (millis() < autoArmDueAt) return;
+
+  // Only auto-arm if we're still offline from server or wifi.
+  if (currentMode == MODE_DISARMED && (offlineMode || !serverOnline)) {
+    Serial.println("[OFFLINE] Auto-arming to local sensor/alarm mode");
+    setMode(MODE_ARMED, "OFFLINE");
+    autoArmDone = true;
+  }
+  cancelAutoArmSchedule();
+}
+
+bool shouldSendArmDisarmSms(const char *reason) {
+  if (!settingArmDisarmNotification) return false;
+  if (!reason) return true;
+  // Avoid spamming SMS on boot or automatic offline fallback.
+  if (strcmp(reason, "BOOT") == 0) return false;
+  if (strcmp(reason, "OFFLINE") == 0) return false;
+  return true;
 }
 
 bool allowServerRequests() {
@@ -280,6 +327,8 @@ void noteServerOk() {
     serverOnline = true;
     nextServerRetryAt = 0;
     Serial.println("[SERVER] ONLINE");
+    cancelAutoArmSchedule();
+    autoArmDone = false;
     if (wifiTxCharacteristic) {
       wifiTxCharacteristic->setValue("SERVER_ONLINE");
       wifiTxCharacteristic->notify();
@@ -295,12 +344,10 @@ void noteServerFail(const char *tag, int status) {
     serverOnline = false;
     nextServerRetryAt = millis() + SERVER_OFFLINE_RETRY_MS;
     Serial.printf("[SERVER] OFFLINE (failures=%u)\n", serverFailCount);
+    scheduleAutoArmIfNeeded("server_offline");
     if (wifiTxCharacteristic) {
       wifiTxCharacteristic->setValue("SERVER_OFFLINE");
       wifiTxCharacteristic->notify();
-    }
-    if (AUTO_ARM_ON_SERVER_OFFLINE && currentMode == MODE_DISARMED) {
-      setMode(MODE_ARMED, "SERVER OFFLINE");
     }
   } else if (!serverOnline) {
     nextServerRetryAt = millis() + SERVER_OFFLINE_RETRY_MS;
@@ -1729,7 +1776,7 @@ void setMode(SystemMode mode, const char *reason) {
       startExitDelay();
       beep(1);
       Serial.printf("[STATE] ARMED by %s\n", reason);
-      if (settingArmDisarmNotification && String(reason) != "BOOT") {
+      if (shouldSendArmDisarmSms(reason)) {
         sendSmsToAll("SYSTEM ARMED");
       }
       break;
@@ -1741,7 +1788,7 @@ void setMode(SystemMode mode, const char *reason) {
       setAlarmOutputs(false);
       beep(2);
       Serial.printf("[STATE] DISARMED by %s\n", reason);
-      if (settingArmDisarmNotification && String(reason) != "BOOT") {
+      if (shouldSendArmDisarmSms(reason)) {
         sendSmsToAll("SYSTEM DISARMED");
       }
       break;
@@ -1752,7 +1799,7 @@ void setMode(SystemMode mode, const char *reason) {
       startExitDelay();
       beep(3);
       Serial.printf("[STATE] STAY ARM by %s\n", reason);
-      if (settingArmDisarmNotification && String(reason) != "BOOT") {
+      if (shouldSendArmDisarmSms(reason)) {
         sendSmsToAll("SYSTEM STAY ARM");
       }
       break;
@@ -2178,6 +2225,7 @@ void loop() {
   }
   pollRf();
   pollSystemState();
+  serviceAutoArmSchedule();
   if (rfPairingActive && millis() - rfPairingStartedAt > RF_PAIR_WINDOW_MS) {
     Serial.println("[RF] Pairing window timed out");
     sendPairingNotify("timeout");
