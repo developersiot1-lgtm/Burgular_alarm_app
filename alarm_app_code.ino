@@ -5,12 +5,14 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include <Wire.h>
 #include <BLEDevice.h>
 #include <BLE2902.h>
 #include <TinyGsmClient.h>
 #include <RCSwitch.h>
 #include <nvs_flash.h>
 #include <esp_system.h>
+#include <Adafruit_MCP23X17.h>
 
 // -------------------------------------------------------------------
 // Basic hardware
@@ -23,6 +25,9 @@ BLEServer *bleServer = nullptr;
 BLECharacteristic *wifiRxCharacteristic = nullptr;
 BLECharacteristic *wifiTxCharacteristic = nullptr;
 
+Adafruit_MCP23X17 mcp;
+bool mcpAvailable = false;
+
 static const int MODEM_RX = 16;
 static const int MODEM_TX = 17;
 static const int MODEM_BAUD = 115200;
@@ -31,11 +36,15 @@ static const int BUZZER_PIN = 4;
 static const int STATUS_LED_PIN = 22;
 static const int RF_PIN = 35;
 
+// MCP23017 (I2C) wiring for wired door sensors
+static const int I2C_SDA_PIN = 27;
+static const int I2C_SCL_PIN = 32;
+static const uint8_t MCP23017_ADDR = 0x20;  // A0/A1/A2 tied to GND -> 0x20
+
 // Manual wired door zones. Set unused pins to -1.
 static const int DOOR_ZONE_PINS[] = {
-  // First 10 wired zones (edit these GPIOs to match your wiring).
-  19, 18, 5, 21, 23, 25, 26, 27, 32, 33,
-  // Remaining zones disabled.
+  // Using MCP23017 for wired zones, so ESP32 GPIO zones are disabled by default.
+  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1
 };
 static const char *DOOR_ZONE_NAMES[] = {
@@ -98,6 +107,16 @@ static const unsigned long RF_PAIR_WINDOW_MS = 30000;
 // door OPEN   (magnet away)  -> pin HIGH
 static const int DOOR_OPEN_STATE = HIGH;
 static const int DOOR_CLOSED_STATE = LOW;
+
+static const uint8_t MCP_WIRED_ZONE_COUNT = 10;
+// Zone mapping:
+// 1-8  -> GPB0..GPB7
+// 9    -> GPA0
+// 10   -> GPA1
+static const uint8_t MCP_WIRED_ZONE_PINS[MCP_WIRED_ZONE_COUNT] = {
+  8, 9, 10, 11, 12, 13, 14, 15,  // GPB0..GPB7
+  0, 1                            // GPA0..GPA1
+};
 
 // -------------------------------------------------------------------
 // Contact numbers synced from server
@@ -1944,9 +1963,17 @@ void pollRf() {
 
 void pollDoorZones() {
   for (uint8_t i = 0; i < DOOR_ZONE_COUNT; i++) {
-    if (DOOR_ZONE_PINS[i] < 0) continue;
+    int state = -1;
 
-    int state = digitalRead(DOOR_ZONE_PINS[i]);
+    if (DOOR_ZONE_PINS[i] >= 0) {
+      state = digitalRead(DOOR_ZONE_PINS[i]);
+    } else if (mcpAvailable && i < MCP_WIRED_ZONE_COUNT) {
+      // Read from MCP23017 for zones 1-10.
+      state = mcp.digitalRead(MCP_WIRED_ZONE_PINS[i]) ? HIGH : LOW;
+    } else {
+      continue;
+    }
+
     // Trigger only when the door changes from CLOSED to OPEN.
     if (currentMode != MODE_DISARMED && lastDoorZoneState[i] == DOOR_CLOSED_STATE && state == DOOR_OPEN_STATE) {
       handleDoorTrigger(DOOR_ZONE_NAMES[i]);
@@ -2011,6 +2038,22 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
   digitalWrite(STATUS_LED_PIN, LOW);
+
+  // Init MCP23017 (wired door zones)
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  if (mcp.begin_I2C(MCP23017_ADDR, &Wire)) {
+    mcpAvailable = true;
+    Serial.printf("[MCP] MCP23017 online addr=0x%02X SDA=%d SCL=%d\n", MCP23017_ADDR, I2C_SDA_PIN, I2C_SCL_PIN);
+    for (uint8_t i = 0; i < MCP_WIRED_ZONE_COUNT; i++) {
+      uint8_t pin = MCP_WIRED_ZONE_PINS[i];
+      mcp.pinMode(pin, INPUT_PULLUP);
+      lastDoorZoneState[i] = mcp.digitalRead(pin) ? HIGH : LOW;
+      Serial.printf("[ZONE] %s on MCP pin %u initial=%d\n", DOOR_ZONE_NAMES[i], pin, lastDoorZoneState[i]);
+    }
+  } else {
+    mcpAvailable = false;
+    Serial.printf("[MCP] ERROR: MCP23017 not found at addr=0x%02X\n", MCP23017_ADDR);
+  }
 
   for (uint8_t i = 0; i < DOOR_ZONE_COUNT; i++) {
     if (DOOR_ZONE_PINS[i] >= 0) {
