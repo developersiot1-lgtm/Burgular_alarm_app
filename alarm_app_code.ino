@@ -105,8 +105,9 @@ static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 static const unsigned long WIFI_RETRY_ONLINE_MS = 2000;
 static const unsigned long WIFI_RETRY_OFFLINE_MS = 30000;
 static const bool START_BLE_PROVISIONING_ON_WIFI_FAIL = false;
-static const unsigned long HTTP_TIMEOUT_MS = 2500;
+static const unsigned long HTTP_TIMEOUT_MS = 8000;
 static const uint8_t SERVER_OFFLINE_AFTER_FAILS = 3;
+static const unsigned long SERVER_DECLARE_OFFLINE_AFTER_MS = 20000;
 static const unsigned long SERVER_OFFLINE_RETRY_MS = 30000;
 static const bool AUTO_ARM_ON_SERVER_OFFLINE = true;
 static const unsigned long AUTO_ARM_DELAY_MS = 15000;
@@ -218,6 +219,7 @@ bool offlineMode = false;
 unsigned long offlineModeSinceAt = 0;
 bool serverOnline = true;
 uint8_t serverFailCount = 0;
+unsigned long serverFailWindowStartedAt = 0;
 unsigned long lastServerOkAt = 0;
 unsigned long nextServerRetryAt = 0;
 bool autoArmScheduled = false;
@@ -323,6 +325,7 @@ bool allowServerRequests() {
 void noteServerOk() {
   lastServerOkAt = millis();
   serverFailCount = 0;
+  serverFailWindowStartedAt = 0;
   if (!serverOnline) {
     serverOnline = true;
     nextServerRetryAt = 0;
@@ -339,8 +342,16 @@ void noteServerOk() {
 void noteServerFail(const char *tag, int status) {
   (void)tag;
   (void)status;
+  if (serverFailCount == 0) {
+    serverFailWindowStartedAt = millis();
+  }
   serverFailCount = (serverFailCount < 250) ? (serverFailCount + 1) : serverFailCount;
-  if (serverOnline && serverFailCount >= SERVER_OFFLINE_AFTER_FAILS) {
+
+  // Only declare server offline if failures persist for some time, to avoid flapping on transient timeouts.
+  if (serverOnline &&
+      serverFailCount >= SERVER_OFFLINE_AFTER_FAILS &&
+      serverFailWindowStartedAt > 0 &&
+      (millis() - serverFailWindowStartedAt) >= SERVER_DECLARE_OFFLINE_AFTER_MS) {
     serverOnline = false;
     nextServerRetryAt = millis() + SERVER_OFFLINE_RETRY_MS;
     Serial.printf("[SERVER] OFFLINE (failures=%u)\n", serverFailCount);
@@ -2220,7 +2231,7 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > wifiRetryMs) {
     connectWiFi();
   }
-  if (WiFi.status() == WL_CONNECTED && millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
+  if (WiFi.status() == WL_CONNECTED && allowServerRequests() && millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
     fetchSettingsFromServer();
   }
   pollRf();
