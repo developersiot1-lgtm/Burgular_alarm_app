@@ -85,7 +85,7 @@ static const char *PREF_NAMESPACE = "alarmcfg";
 static const char *PREF_WIFI_SSID = "wifi_ssid";
 static const char *PREF_WIFI_PASS = "wifi_pass";
 static const char *PREF_SETTINGS_CACHE = "set_cache";
-static const char *BLE_DEVICE_NAME = "MONSOW_312603";
+static const char *BLE_DEVICE_NAME = "MONSOW_052604";
 static const char *BLE_SERVICE_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E2";
 static const char *BLE_RX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E3";
 static const char *BLE_TX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E4";
@@ -1842,8 +1842,8 @@ void handleDoorTrigger(const char *zoneName) {
     return;
   }
   if (exitDelayActive) {
-    Serial.printf("[DELAY] Ignoring trigger during exit delay: %s\n", zoneName);
-    return;
+    // User requirement: do not ignore sensor triggers during exit delay.
+    Serial.printf("[DELAY] Trigger during exit delay: %s\n", zoneName);
   }
   if (entryDelayActive) {
     Serial.printf("[DELAY] Entry delay already running, ignoring additional trigger: %s\n", zoneName);
