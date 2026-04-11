@@ -98,14 +98,16 @@ RTC_DATA_ATTR uint32_t rtcWarmResetMarker = 0;
 static const uint32_t RTC_WARM_RESET_MAGIC = 0xB16B00B5UL;
 
 // Poll interval for app/server arm-disarm state.
-static const unsigned long STATE_POLL_MS = 500;
+static const unsigned long STATE_POLL_DISARMED_MS = 500;
+static const unsigned long STATE_POLL_ARMED_MS = 2500;
 static const unsigned long MODEM_NETWORK_TIMEOUT_MS = 15000;
 static const unsigned long RF_PAIR_WINDOW_MS = 30000;
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 8000;
 static const unsigned long WIFI_RETRY_ONLINE_MS = 2000;
 static const unsigned long WIFI_RETRY_OFFLINE_MS = 30000;
 static const bool START_BLE_PROVISIONING_ON_WIFI_FAIL = false;
-static const unsigned long HTTP_TIMEOUT_MS = 8000;
+static const unsigned long HTTP_TIMEOUT_DISARMED_MS = 8000;
+static const unsigned long HTTP_TIMEOUT_ARMED_MS = 1500;
 static const uint8_t SERVER_OFFLINE_AFTER_FAILS = 3;
 static const unsigned long SERVER_DECLARE_OFFLINE_AFTER_MS = 20000;
 static const unsigned long SERVER_OFFLINE_RETRY_MS = 30000;
@@ -796,7 +798,7 @@ void fetchSettingsFromServer() {
   }
 
   HTTPClient http;
-  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   String url = String(SETTINGS_URL_BASE) + deviceUuid() + "&device_name=" + deviceName();
   Serial.printf("[SETTINGS] GET %s\n", url.c_str());
   http.begin(url);
@@ -833,6 +835,7 @@ void sendAlarmEvent(String eventType, String zone, String message) {
   }
 
   HTTPClient http;
+  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   String url = "http://monsow.in/alarm/index.php?action=alarm_event";
 
   http.begin(url);
@@ -1600,6 +1603,7 @@ void registerDeviceToServer() {
   }
 
   HTTPClient http;
+  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   http.begin(DEVICE_REGISTER_URL);
   http.addHeader("Content-Type", "application/json");
 
@@ -1636,6 +1640,7 @@ void reportTriggeredSensorToSystemState(const String &triggeredSensor) {
   }
 
   HTTPClient http;
+  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   http.begin(SYSTEM_STATE_URL);
   http.addHeader("Content-Type", "application/json");
 
@@ -1894,14 +1899,15 @@ void pollSystemState() {
     return;
   }
 
+  unsigned long interval = (currentMode == MODE_DISARMED) ? STATE_POLL_DISARMED_MS : STATE_POLL_ARMED_MS;
   unsigned long now = millis();
-  if (now - lastStatePollAt < STATE_POLL_MS) {
+  if (now - lastStatePollAt < interval) {
     return;
   }
   lastStatePollAt = now;
 
   HTTPClient http;
-  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   String url = String(SYSTEM_STATE_URL) + "&device_uuid=" + deviceUuid();
   http.begin(url);
   int status = http.GET();
@@ -1935,6 +1941,11 @@ void connectWiFi() {
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+    // Keep sensor/RF processing alive while we're waiting on WiFi.
+    pollRf();
+    updateTimedAlarmState();
+    pollDoorZones();
+    updateAlarmBuzzer();
     delay(500);
     Serial.print(".");
   }
@@ -2202,7 +2213,7 @@ void setup() {
     }
   }
 
-  rf.enableReceive(RF_PIN);
+  rf.enableReceive(digitalPinToInterrupt(RF_PIN));
   Serial.printf("[RF] Receiver enabled on GPIO %d\n", RF_PIN);
 
   if (ERASE_ALL_NVS_ON_RESET_BUTTON && warmReset && resetReason != ESP_RST_DEEPSLEEP) {
@@ -2232,7 +2243,9 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > wifiRetryMs) {
     connectWiFi();
   }
-  if (WiFi.status() == WL_CONNECTED && allowServerRequests() && millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
+  // Avoid long HTTP work while armed; keep RF/door handling responsive.
+  if (WiFi.status() == WL_CONNECTED && currentMode == MODE_DISARMED && allowServerRequests() &&
+      millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
     fetchSettingsFromServer();
   }
   pollRf();
