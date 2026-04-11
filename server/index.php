@@ -2414,15 +2414,48 @@ if (!$device) {
     }
 
     private function getSystemState() {
-        $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1");
+        // Accept device_uuid from GET (ESP32 polling) or from a POST body (if any).
+        // Falls back to 'default' so old callers without a UUID still work.
+        $input = $this->getInput();
+        $device_uuid = trim($_GET['device_uuid'] ?? ($input['device_uuid'] ?? 'default'));
+        if ($device_uuid === '') {
+            $device_uuid = 'default';
+        }
+
+        // Build sibling UUIDs (ESP32 BLE MAC / WiFi MAC can differ by a small offset).
+        $siblings = [$device_uuid];
+        if (preg_match('/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/', $device_uuid)) {
+            $parts = explode(':', strtoupper($device_uuid));
+            $last = hexdec($parts[5]);
+            foreach ([-2, -1, 1, 2] as $delta) {
+                $parts[5] = sprintf('%02X', ($last + $delta) & 0xFF);
+                $siblings[] = implode(':', $parts);
+            }
+        }
+        $siblings = array_values(array_unique($siblings));
+
+        // Fetch the most recent state row for THIS device (or its siblings).
+        $placeholders = implode(',', array_fill(0, count($siblings), '?'));
+        $state = $this->db->fetchOne(
+            "SELECT * FROM system_state
+             WHERE device_uuid IN ($placeholders)
+             ORDER BY id DESC LIMIT 1",
+            $siblings
+        );
+
         if (!$state) {
+            // Seed a disarmed row for this device.
             $defaultState = [
+                'device_uuid' => $device_uuid,
                 'state' => 'disarmed',
                 'updated_at' => date('Y-m-d H:i:s'),
                 'updated_by' => 'system'
             ];
             $this->db->insert('system_state', $defaultState);
-            $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1") ?: $defaultState;
+            $state = $this->db->fetchOne(
+                "SELECT * FROM system_state WHERE device_uuid = ? ORDER BY id DESC LIMIT 1",
+                [$device_uuid]
+            ) ?: $defaultState;
         }
 
         // Schedule automation: arm/disarm based on active window, but do not fight manual override.
@@ -2431,17 +2464,29 @@ if (!$device) {
         $currentUpdatedBy = $state['updated_by'] ?? '';
         $currentState = $state['state'] ?? 'disarmed';
 
+        // Grace period: avoid schedule overriding a very recent manual change.
+        $secondsSinceLastUpdate = $currentUpdatedAt > 0 ? (time() - $currentUpdatedAt) : PHP_INT_MAX;
+        $graceSeconds = 60;
+
         if ($sched['active']) {
             // Auto-arm only if there has been no manual update since the schedule window started.
-            if ($currentState !== 'armed' && is_int($sched['window_start']) && $currentUpdatedAt < $sched['window_start']) {
+            if ($currentState !== 'armed' &&
+                is_int($sched['window_start']) &&
+                $currentUpdatedAt < $sched['window_start'] &&
+                $secondsSinceLastUpdate > $graceSeconds
+            ) {
                 $this->db->insert('system_state', [
+                    'device_uuid' => $device_uuid,
                     'state' => 'armed',
                     'previous_state' => $currentState,
                     'updated_at' => date('Y-m-d H:i:s'),
                     'updated_by' => 'SCHEDULE',
                     'reason' => ($sched['schedule_name'] !== '' ? ('Schedule: ' . $sched['schedule_name']) : 'Schedule: active'),
                 ]);
-                $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1") ?: $state;
+                $state = $this->db->fetchOne(
+                    "SELECT * FROM system_state WHERE device_uuid = ? ORDER BY id DESC LIMIT 1",
+                    [$device_uuid]
+                ) ?: $state;
                 $currentState = $state['state'] ?? $currentState;
                 $currentUpdatedBy = $state['updated_by'] ?? $currentUpdatedBy;
                 $currentUpdatedAt = isset($state['updated_at']) ? strtotime($state['updated_at']) : $currentUpdatedAt;
@@ -2450,17 +2495,22 @@ if (!$device) {
             // Auto-disarm only if schedule previously set the state (avoid overriding manual arm outside schedule).
             if ($currentState !== 'disarmed' && $currentUpdatedBy === 'SCHEDULE') {
                 $this->db->insert('system_state', [
+                    'device_uuid' => $device_uuid,
                     'state' => 'disarmed',
                     'previous_state' => $currentState,
                     'updated_at' => date('Y-m-d H:i:s'),
                     'updated_by' => 'SCHEDULE',
                     'reason' => 'Schedule: inactive',
                 ]);
-                $state = $this->db->fetchOne("SELECT * FROM system_state ORDER BY id DESC LIMIT 1") ?: $state;
+                $state = $this->db->fetchOne(
+                    "SELECT * FROM system_state WHERE device_uuid = ? ORDER BY id DESC LIMIT 1",
+                    [$device_uuid]
+                ) ?: $state;
             }
         }
 
         // Add schedule debug fields for the app (non-breaking: extra JSON keys).
+        $state['requested_device_uuid'] = $device_uuid;
         $state['schedule_active'] = (bool)$sched['active'];
         $state['schedule_name'] = $sched['schedule_name'];
         $state['schedule_desired_state'] = $sched['desired_state'];
@@ -2471,20 +2521,31 @@ if (!$device) {
     }
 
     private function updateSystemState() {
-    error_log("SYSTEM STATE INPUT: " . json_encode($this->getInput()));
         $input = $this->getInput();
+        error_log("SYSTEM STATE INPUT: " . json_encode($input));
+
         if (!isset($input['state'])) {
             $this->sendResponse(['error' => 'State is required'], 400);
             return;
         }
 
         $validStates = ['disarmed', 'armed', 'stay_arm', 'alarm'];
-        if (!in_array($input['state'], $validStates)) {
+        if (!in_array($input['state'], $validStates, true)) {
             $this->sendResponse(['error' => 'Invalid state'], 400);
             return;
         }
 
-        $prev = $this->db->fetchOne("SELECT state FROM system_state ORDER BY id DESC LIMIT 1");
+        $device_uuid = trim($input['device_uuid'] ?? ($input['deviceuuid'] ?? 'default'));
+        if ($device_uuid === '') {
+            $device_uuid = 'default';
+        }
+
+        // Fetch previous state for THIS device only.
+        $prev = $this->db->fetchOne(
+            "SELECT state FROM system_state WHERE device_uuid = ? ORDER BY id DESC LIMIT 1",
+            [$device_uuid]
+        );
+
         $reason = null;
         if (isset($input['reason']) && is_string($input['reason'])) {
             $reason = trim($input['reason']);
@@ -2498,6 +2559,7 @@ if (!$device) {
         }
 
         $stateData = [
+            'device_uuid' => $device_uuid,
             'state' => $input['state'],
             'previous_state' => $prev['state'] ?? null,
             'updated_at' => date('Y-m-d H:i:s'),
@@ -2506,8 +2568,28 @@ if (!$device) {
         ];
 
         $this->db->insert('system_state', $stateData);
-        $this->logActivity($this->getStateDisplayName($input['state']), 'Control Panel', $input['user'] ?? 'API');
 
+        // Also write for sibling UUIDs (BLE/WiFi MAC offset +/- 2)
+        if (preg_match('/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/', $device_uuid)) {
+            $parts = explode(':', strtoupper($device_uuid));
+            $last = hexdec($parts[5]);
+            foreach ([-2, -1, 1, 2] as $delta) {
+                $parts[5] = sprintf('%02X', ($last + $delta) & 0xFF);
+                $siblingData = $stateData;
+                $siblingData['device_uuid'] = implode(':', $parts);
+                $this->db->insert('system_state', $siblingData);
+            }
+        }
+
+        // Insert an event row for app polling (non-breaking).
+        $this->db->insert('alarm_events', [
+            'device_uuid' => $device_uuid,
+            'event_type' => 'STATE_CHANGE',
+            'zone' => '',
+            'message' => $input['state'],
+        ]);
+
+        $this->logActivity($this->getStateDisplayName($input['state']), 'Control Panel', $input['user'] ?? 'API');
         $this->sendResponse(['success' => true, 'state' => $input['state']]);
     }
 

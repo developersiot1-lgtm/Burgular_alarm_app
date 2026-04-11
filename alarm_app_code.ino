@@ -1902,7 +1902,8 @@ void pollSystemState() {
 
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.begin(SYSTEM_STATE_URL);
+  String url = String(SYSTEM_STATE_URL) + "&device_uuid=" + deviceUuid();
+  http.begin(url);
   int status = http.GET();
   if (status == 200) {
     noteServerOk();
