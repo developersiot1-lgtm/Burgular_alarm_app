@@ -1119,7 +1119,9 @@ private function syncSettingsToDevice() {
         $device_name = $request_device_name;
 
 // ── Step 2: Get latest settings from settings_sync_log ────────────
-// Single source of truth — Flutter always writes here via saveSettings()
+// Single source of truth — Flutter always writes here via saveSettings().
+// IMPORTANT: choose the newest row across sibling UUIDs (do not stop at the first match),
+// because some devices can report BLE/WiFi MAC variants (±1/±2).
 $resolved_uuid = $device_uuid;
 
 $buildAltUuid = function (string $uuid, int $delta): string {
@@ -1134,38 +1136,34 @@ $buildAltUuid = function (string $uuid, int $delta): string {
     return implode(':', $bytes);
 };
 
-$uuidsToTry = [
+$uuidsToTry = array_values(array_unique(array_filter([
     $device_uuid,
     $buildAltUuid($device_uuid, 2),
     $buildAltUuid($device_uuid, -2),
-];
+    $buildAltUuid($device_uuid, 1),
+    $buildAltUuid($device_uuid, -1),
+])));
 
 $syncRow = null;
-foreach ($uuidsToTry as $candidate) {
-    if (!$candidate) {
-        continue;
-    }
-    $row = $this->db->fetchOne(
+if (!empty($uuidsToTry)) {
+    $placeholders = implode(',', array_fill(0, count($uuidsToTry), '?'));
+    $syncRow = $this->db->fetchOne(
         "SELECT id, device_uuid, synced_at, settings_json
          FROM settings_sync_log
-         WHERE device_uuid = ?
+         WHERE device_uuid IN ($placeholders)
            AND sync_type = 'upload'
            AND sync_status = 'success'
          ORDER BY id DESC
          LIMIT 1",
-        [$candidate]
+        $uuidsToTry
     );
-    if ($row && !empty($row['settings_json'])) {
-        $syncRow = $row;
-        $resolved_uuid = $candidate;
-        break;
-    }
 }
 
 if (!$syncRow || empty($syncRow['settings_json'])) {
-    // No settings saved yet — return safe defaults
+    // No settings saved yet — return safe defaults.
     $settingsJson = null;
 } else {
+    $resolved_uuid = $syncRow['device_uuid'] ?? $device_uuid;
     $settingsJson = $syncRow['settings_json'];
 }
         // ── Step 4: Decode stored JSON blob ───────────────────────────────
