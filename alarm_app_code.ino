@@ -143,6 +143,7 @@ unsigned long lastSettingsFetchAt = 0;
 static const unsigned long SETTINGS_FETCH_DISARMED_MS = 1000;
 static const unsigned long SETTINGS_FETCH_ARMED_MS = 6000;
 String cachedSettingsJson;
+long lastSettingsSyncLogId = -1;
 
 // -------------------------------------------------------------------
 // Manual RF codes
@@ -798,35 +799,92 @@ void fetchSettingsFromServer() {
     return;
   }
 
-  HTTPClient http;
-  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
-  String url = String(SETTINGS_URL_BASE) + deviceUuid() + "&device_name=" + deviceName();
-  Serial.printf("[SETTINGS] GET %s\n", url.c_str());
-  http.begin(url);
-  int status = http.GET();
-  String body = http.getString();
-  Serial.printf("[SETTINGS] Status=%d body=%s\n", status, body.c_str());
+  // Some deployments store latest settings under a sibling UUID (+/- 1 or +/- 2 last byte).
+  // Without changing the server, we probe a small set of UUIDs and choose the newest sync_log_id.
+  const String baseUuid = deviceUuid();
+  const bool limitedScan = (currentMode != MODE_DISARMED);
+  String candidates[5];
+  uint8_t candidateCount = 0;
 
-  http.end();
+  auto addCandidate = [&](const String &value) {
+    if (value.length() == 0) return;
+    for (uint8_t i = 0; i < candidateCount; i++) {
+      if (candidates[i] == value) return;
+    }
+    if (candidateCount < 5) {
+      candidates[candidateCount++] = value;
+    }
+  };
 
-  if (status != 200) {
-    noteServerFail("settings", status);
+  addCandidate(baseUuid);
+  addCandidate(uuidWithLastByteDelta(baseUuid, 2));
+  addCandidate(uuidWithLastByteDelta(baseUuid, -2));
+  if (!limitedScan) {
+    addCandidate(uuidWithLastByteDelta(baseUuid, 1));
+    addCandidate(uuidWithLastByteDelta(baseUuid, -1));
+  }
+
+  long bestSyncId = -1;
+  String bestSettingsBody;
+  String bestBody;
+  String bestUuid;
+
+  for (uint8_t i = 0; i < candidateCount; i++) {
+    HTTPClient http;
+    http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
+    String url = String(SETTINGS_URL_BASE) + candidates[i] + "&device_name=" + deviceName();
+    Serial.printf("[SETTINGS] GET %s\n", url.c_str());
+    http.begin(url);
+    int status = http.GET();
+    String body = http.getString();
+    http.end();
+
+    if (status != 200) {
+      Serial.printf("[SETTINGS] Status=%d (uuid=%s)\n", status, candidates[i].c_str());
+      noteServerFail("settings", status);
+      continue;
+    }
+
+    noteServerOk();
+    long syncId = extractJsonIntValue(body, "sync_log_id", -1);
+    String settingsBody = resolveSettingsPayload(body);
+    settingsBody.trim();
+
+    Serial.printf("[SETTINGS] OK uuid=%s sync_log_id=%ld\n", candidates[i].c_str(), syncId);
+    if (settingsBody.length() == 0) {
+      continue;
+    }
+
+    // Prefer the newest sync_log_id; fall back to first valid payload if id missing.
+    const bool better =
+        (syncId >= 0 && (bestSyncId < 0 || syncId > bestSyncId)) ||
+        (syncId < 0 && bestSyncId < 0 && bestSettingsBody.length() == 0);
+
+    if (better) {
+      bestSyncId = syncId;
+      bestSettingsBody = settingsBody;
+      bestBody = body;
+      bestUuid = candidates[i];
+    }
+  }
+
+  if (bestSettingsBody.length() == 0) {
     return;
   }
-  noteServerOk();
 
-  String settingsBody = resolveSettingsPayload(body);
-  if (settingsBody.length() == 0) {
-    return;
-  }
+  Serial.printf("[SETTINGS] Using uuid=%s sync_log_id=%ld (last=%ld)\n",
+                bestUuid.c_str(), bestSyncId, lastSettingsSyncLogId);
   Serial.println("========== SETTINGS BODY ==========");
-  Serial.println(settingsBody);
+  Serial.println(bestSettingsBody);
   Serial.println("===================================");
-  settingsBody.trim();
-  applySettingsPayload(settingsBody);
-  applyContactNumbersFromSettingsPayload(settingsBody);
-  saveSettingsCacheIfChanged(settingsBody);
+
+  applySettingsPayload(bestSettingsBody);
+  applyContactNumbersFromSettingsPayload(bestSettingsBody);
+  saveSettingsCacheIfChanged(bestSettingsBody);
   lastSettingsFetchAt = millis();
+  if (bestSyncId >= 0) {
+    lastSettingsSyncLogId = bestSyncId;
+  }
 }
 
 void sendAlarmEvent(String eventType, String zone, String message) {
@@ -1479,6 +1537,24 @@ String deviceUuid() {
 
 String deviceName() {
   return String(BLE_DEVICE_NAME);
+}
+
+String uuidWithLastByteDelta(const String &uuid, int delta) {
+  int lastColon = uuid.lastIndexOf(':');
+  if (lastColon < 0 || lastColon + 2 >= uuid.length()) {
+    return uuid;
+  }
+  String prefix = uuid.substring(0, lastColon + 1);
+  String lastByte = uuid.substring(lastColon + 1);
+  lastByte.trim();
+  if (lastByte.length() != 2) {
+    return uuid;
+  }
+  int value = static_cast<int>(strtol(lastByte.c_str(), nullptr, 16));
+  int next = (value + delta) & 0xFF;
+  char buf[3];
+  snprintf(buf, sizeof(buf), "%02X", next);
+  return prefix + String(buf);
 }
 
 String readAtResponse(uint32_t timeoutMs = 1000) {
