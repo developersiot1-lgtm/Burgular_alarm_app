@@ -140,7 +140,8 @@ char callNumbers[MAX_CONTACT_NUMBERS][CONTACT_NUMBER_LEN];
 uint8_t smsNumberCount = 0;
 uint8_t callNumberCount = 0;
 unsigned long lastSettingsFetchAt = 0;
-static const unsigned long SETTINGS_FETCH_MS = 1000;
+static const unsigned long SETTINGS_FETCH_DISARMED_MS = 1000;
+static const unsigned long SETTINGS_FETCH_ARMED_MS = 6000;
 String cachedSettingsJson;
 
 // -------------------------------------------------------------------
@@ -2243,9 +2244,9 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED && wifiProvisioned && millis() - lastWiFiAttemptAt > wifiRetryMs) {
     connectWiFi();
   }
-  // Avoid long HTTP work while armed; keep RF/door handling responsive.
-  if (WiFi.status() == WL_CONNECTED && currentMode == MODE_DISARMED && allowServerRequests() &&
-      millis() - lastSettingsFetchAt > SETTINGS_FETCH_MS) {
+  // Allow settings refresh in all modes, but poll slower while armed to keep RF/door handling responsive.
+  unsigned long settingsIntervalMs = (currentMode == MODE_DISARMED) ? SETTINGS_FETCH_DISARMED_MS : SETTINGS_FETCH_ARMED_MS;
+  if (WiFi.status() == WL_CONNECTED && allowServerRequests() && millis() - lastSettingsFetchAt > settingsIntervalMs) {
     fetchSettingsFromServer();
   }
   pollRf();
