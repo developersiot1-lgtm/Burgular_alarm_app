@@ -728,6 +728,20 @@ void applyContactNumbersFromSettingsPayload(const String &settingsBody) {
   uint8_t newSmsCount = parseJsonContactNumbersFlexible(settingsBody, "alarm_sms_numbers", newSms, MAX_CONTACT_NUMBERS);
   uint8_t newCallCount = parseJsonContactNumbersFlexible(settingsBody, "alarm_call_numbers", newCall, MAX_CONTACT_NUMBERS);
 
+  // If the server provides only one list, mirror it into the other.
+  // This avoids "SMS updated but CALL still old" when the app doesn't send both arrays.
+  if (newSmsCount > 0 && newCallCount == 0) {
+    for (uint8_t i = 0; i < newSmsCount; i++) {
+      snprintf(newCall[i], CONTACT_NUMBER_LEN, "%s", newSms[i]);
+    }
+    newCallCount = newSmsCount;
+  } else if (newCallCount > 0 && newSmsCount == 0) {
+    for (uint8_t i = 0; i < newCallCount; i++) {
+      snprintf(newSms[i], CONTACT_NUMBER_LEN, "%s", newCall[i]);
+    }
+    newSmsCount = newCallCount;
+  }
+
   if (newSmsCount == 0 && newCallCount == 0) {
     uint8_t sharedCount = parseJsonContactNumbersFlexible(settingsBody, "contact_numbers", newSms, MAX_CONTACT_NUMBERS);
     for (uint8_t i = 0; i < sharedCount; i++) {
