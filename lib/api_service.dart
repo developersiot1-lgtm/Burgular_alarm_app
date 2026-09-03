@@ -13,13 +13,15 @@ class ApiService {
   /// Check if device exists in registry
   Future<Map<String, dynamic>?> deviceCheckExists(String deviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=device_check_exists&device_uuid=$deviceUuid'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse(
+                '$baseUrl?action=device_check_exists&device_uuid=$deviceUuid'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
-
       }
       return null;
     } catch (e) {
@@ -60,19 +62,21 @@ class ApiService {
       if (ipAddress != null) data['ip_address'] = ipAddress;
       if (bleServiceUuid != null) data['ble_service_uuid'] = bleServiceUuid;
       if (batteryLevel != null) data['battery_level'] = batteryLevel.toString();
-      if (signalStrength != null) data['signal_strength'] = signalStrength .toString();
+      if (signalStrength != null)
+        data['signal_strength'] = signalStrength.toString();
       if (firmwareVersion != null) data['firmware_version'] = firmwareVersion;
       if (zoneName != null) data['zone_name'] = zoneName;
       if (manufacturer != null) data['manufacturer'] = manufacturer;
       if (model != null) data['model'] = model;
       if (capabilities != null) data['capabilities'] = jsonEncode(capabilities);
 
-
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=device_register'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(data),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=device_register'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(data),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -87,9 +91,11 @@ class ApiService {
   /// Get device information
   Future<Map<String, dynamic>?> deviceGetInfo(String deviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=device_info&device_uuid=$deviceUuid'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=device_info&device_uuid=$deviceUuid'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -114,16 +120,19 @@ class ApiService {
       final data = {'device_uuid': deviceUuid};
 
       if (batteryLevel != null) data['battery_level'] = batteryLevel.toString();
-      if (signalStrength != null) data['signal_strength'] = signalStrength.toString();
+      if (signalStrength != null)
+        data['signal_strength'] = signalStrength.toString();
       if (temperature != null) data['temperature'] = temperature.toString();
       if (cpuUsage != null) data['cpu_usage'] = cpuUsage.toString();
       if (memoryUsage != null) data['memory_usage'] = memoryUsage.toString();
 
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=device_heartbeat'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(data),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=device_heartbeat'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(data),
+          )
+          .timeout(Duration(seconds: 10));
 
       return response.statusCode == 200;
     } catch (e) {
@@ -139,15 +148,17 @@ class ApiService {
     String relationshipType = 'controls',
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=device_create_relationship'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'parent_device_uuid': parentDeviceUuid,
-          'child_device_uuid': childDeviceUuid,
-          'relationship_type': relationshipType,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=device_create_relationship'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'parent_device_uuid': parentDeviceUuid,
+              'child_device_uuid': childDeviceUuid,
+              'relationship_type': relationshipType,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -163,9 +174,11 @@ class ApiService {
   /// List all devices
   Future<List<dynamic>> deviceList() async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=device_list'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=device_list'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -174,16 +187,18 @@ class ApiService {
       return [];
     } catch (e) {
       print('❌ Device list error: $e');
-      return [];
+      rethrow;
     }
   }
 
   /// List devices by type
   Future<List<dynamic>> deviceListByType(String type) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=device_list_by_type&type=$type'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=device_list_by_type&type=$type'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -199,14 +214,16 @@ class ApiService {
   /// Update device name
   Future<bool> updateDeviceName(String deviceUuid, String deviceName) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=updatedevicename'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'device_name': deviceName,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=updatedevicename'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'device_name': deviceName,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -222,13 +239,15 @@ class ApiService {
   /// Delete device
   Future<bool> deleteDevice(String deviceUuid) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=deletedevice'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=deletedevice'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -245,39 +264,49 @@ class ApiService {
   // EXISTING METHODS (KEPT FOR COMPATIBILITY)
   // ============================================
 
-  /// Register mobile device (legacy method)
-  Future<Map<String, dynamic>> registerMobileDevice(
-      String deviceUuid,
-      String displayName,
-      String qrData,
-      ) async {
+  Future<Map<String, dynamic>?> registerMobileDevice(
+    String deviceUuid,
+    String displayName,
+    String qrData,
+  ) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=register_mobile_device'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'display_name': displayName,
-          'qr_data': qrData,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=register_mobile_device'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'deviceuuid': deviceUuid,
+              'displayname': displayName,
+              'qrdata': qrData,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
+
+      print('REGISTER STATUS: ${response.statusCode}');
+      print('REGISTER BODY: ${response.body}');
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
       }
-      throw Exception('Failed to register device');
+      throw Exception(
+          'Failed to register device: ${response.statusCode} ${response.body}');
     } catch (e) {
-      print('❌ Register mobile device error: $e');
+      print('Register mobile device error: $e');
       rethrow;
     }
   }
 
   /// Get system state
-  Future<Map<String, dynamic>?> getSystemState() async {
+  Future<Map<String, dynamic>?> getSystemState({String? hubDeviceUuid}) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=system_state'),
-      ).timeout(Duration(seconds: 10));
+      // Build URL: if we have a hubDeviceUuid, pass it so the server
+      // returns the state row for THAT device only.
+      final uri = hubDeviceUuid != null && hubDeviceUuid.isNotEmpty
+          ? Uri.parse(
+              '$baseUrl?action=system_state&device_uuid=${Uri.encodeComponent(hubDeviceUuid)}')
+          : Uri.parse('$baseUrl?action=system_state');
+
+      final response = await http.get(uri).timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -289,65 +318,52 @@ class ApiService {
     }
   }
 
-  /// Get alarm events for a device (used for sensor-trigger notifications).
-  /// GET ?action=alarm_events&device_uuid=...&since_id=...&limit=...
-  Future<List<dynamic>> getAlarmEvents({
+  /// Update system state
+  Future<void> updateSystemState(
+    String state, {
     required String deviceUuid,
-    int? sinceId,
-    int limit = 20,
-    bool latest = false,
+    String? user,
   }) async {
     try {
-      final sid = sinceId ?? 0;
-      final uri = Uri.parse(
-        '$baseUrl?action=alarm_events&device_uuid=${Uri.encodeComponent(deviceUuid)}&since_id=$sid&limit=$limit&latest=${latest ? 1 : 0}',
-      );
-      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=system_state'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'state': state,
+              'user': user ?? 'Mobile App',
+              'device_uuid': deviceUuid,
+            }),
+          )
+          .timeout(const Duration(seconds: 5)); // ← was missing entirely
+
       if (response.statusCode != 200) {
-        // ignore: avoid_print
-        print('getAlarmEvents bad status=${response.statusCode} body=${response.body}');
-        return [];
+        throw Exception(
+            'Failed to update system state (${response.statusCode}): ${response.body}');
       }
-
-      final data = json.decode(response.body);
-      final events = data['events'];
-      if (events is List) return events;
-      return [];
     } catch (e) {
-      // ignore: avoid_print
-      print('Get alarm events error: $e');
-      return [];
-    }
-  }
-
-  /// Update system state
-  Future<void> updateSystemState(String state, {String? user}) async {
-    try {
-      await http.post(
-        Uri.parse('$baseUrl?action=system_state'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'state': state,
-          'user': user ?? 'Mobile App',
-        }),
-      ).timeout(Duration(seconds: 10));
-    } catch (e) {
-      print('❌ Update system state error: $e');
+      print('❌ updateSystemState error: $e');
       rethrow;
     }
   }
 
   /// Trigger SOS
-  Future<void> triggerSOS() async {
-    await updateSystemState('alarm', user: 'SOS TRIGGER');
+  Future<void> triggerSOS(String deviceUuid) async {
+    await updateSystemState(
+      'alarm',
+      deviceUuid: deviceUuid,
+      user: 'SOS TRIGGER',
+    );
   }
 
   /// Get devices
   Future<List<dynamic>> getDevices() async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=devices'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=devices'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -361,11 +377,18 @@ class ApiService {
   }
 
   /// Get mobile devices
-  Future<List<dynamic>> getMobileDevices() async {
+  Future<List<dynamic>> getMobileDevices({String? deviceUuid}) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=mobile_devices'),
-      ).timeout(Duration(seconds: 10));
+      final uri = deviceUuid != null && deviceUuid.isNotEmpty
+          ? Uri.parse(
+              '$baseUrl?action=mobile_devices&device_uuid=${Uri.encodeComponent(deviceUuid)}')
+          : Uri.parse('$baseUrl?action=mobile_devices');
+
+      final response = await http
+          .get(
+            uri,
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -379,11 +402,18 @@ class ApiService {
   }
 
   /// Get activity logs
-  Future<List<dynamic>> getActivityLogs({int limit = 50}) async {
+  Future<List<dynamic>> getActivityLogs({
+    int limit = 100,
+    String? deviceUuid,
+  }) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=logs&limit=$limit'),
-      ).timeout(Duration(seconds: 10));
+      final uri = deviceUuid != null && deviceUuid.isNotEmpty
+          ? Uri.parse(
+              '$baseUrl?action=logs&limit=$limit&device_uuid=${Uri.encodeComponent(deviceUuid)}',
+            )
+          : Uri.parse('$baseUrl?action=logs&limit=$limit');
+
+      final response = await http.get(uri).timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -396,6 +426,38 @@ class ApiService {
     }
   }
 
+  Future<bool> postActivityLog({
+    required String event,
+    required String device,
+    required String user,
+    String? deviceUuid,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=logs'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'event': event,
+              'device': device,
+              'user': user,
+              if (deviceUuid != null && deviceUuid.isNotEmpty)
+                'device_uuid': deviceUuid,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['success'] == true;
+      }
+      return false;
+    } catch (e) {
+      print('❌ Post activity log error: $e');
+      return false;
+    }
+  }
+
   // ============================================
   // SETTINGS MANAGEMENT
   // ============================================
@@ -403,9 +465,11 @@ class ApiService {
   /// Get settings
   Future<Map<String, dynamic>?> getSettings(String deviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=get_settings&device_uuid=$deviceUuid'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=get_settings&device_uuid=$deviceUuid'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -419,18 +483,21 @@ class ApiService {
   }
 
   /// Save settings
-  Future<bool> saveSettings(String deviceUuid, Map<String, dynamic> settings) async {
+  Future<bool> saveSettings(
+      String deviceUuid, Map<String, dynamic> settings) async {
     try {
       final data = {
         'device_uuid': deviceUuid,
         ...settings,
       };
 
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=save_settings'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(data),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=save_settings'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(data),
+          )
+          .timeout(const Duration(seconds: 6));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -446,9 +513,12 @@ class ApiService {
   /// Sync settings to device
   Future<Map<String, dynamic>?> syncSettingsToDevice(String deviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=sync_settings_to_device&device_uuid=$deviceUuid'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse(
+                '$baseUrl?action=sync_settings_to_device&device_uuid=$deviceUuid'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -467,9 +537,11 @@ class ApiService {
   /// Get schedules
   Future<List<dynamic>> getSchedules(String deviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=get_schedules&device_uuid=$deviceUuid'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=get_schedules&device_uuid=$deviceUuid'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -483,16 +555,19 @@ class ApiService {
   }
 
   /// Save schedules
-  Future<bool> saveSchedules(String deviceUuid, List<Map<String, dynamic>> schedules) async {
+  Future<bool> saveSchedules(
+      String deviceUuid, List<Map<String, dynamic>> schedules) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=save_schedules'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'schedules': schedules,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=save_schedules'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'schedules': schedules,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -508,14 +583,16 @@ class ApiService {
   /// Delete schedule
   Future<bool> deleteSchedule(String deviceUuid, String scheduleId) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=delete_schedule'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'schedule_id': scheduleId,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=delete_schedule'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'schedule_id': scheduleId,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -531,14 +608,16 @@ class ApiService {
   /// Toggle schedule
   Future<bool> toggleSchedule(String deviceUuid, String scheduleId) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=toggle_schedule'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'schedule_id': scheduleId,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=toggle_schedule'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'schedule_id': scheduleId,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -586,9 +665,11 @@ class ApiService {
   /// Get voice recordings
   Future<List<dynamic>> getVoiceRecordings() async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=get_voice_recordings'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=get_voice_recordings'),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -606,7 +687,7 @@ class ApiService {
     try {
       final recordings = await getVoiceRecordings();
       final recording = recordings.firstWhere(
-            (r) => r['id'] == recordingId,
+        (r) => r['id'] == recordingId,
         orElse: () => null,
       );
 
@@ -639,18 +720,22 @@ class ApiService {
   /// Get contact numbers
   Future<List<dynamic>> getContactNumbers(String deviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=get_contact_numbers&device_uuid=$deviceUuid'),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse(
+              '$baseUrl?action=get_contact_numbers&device_uuid=${Uri.encodeComponent(deviceUuid)}',
+            ),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
         return result['contacts'] ?? [];
       }
-      return [];
+      throw Exception('Failed to get contact numbers: ${response.body}');
     } catch (e) {
       print('❌ Get contact numbers error: $e');
-      return [];
+      rethrow;
     }
   }
 
@@ -662,20 +747,28 @@ class ApiService {
     String? contactName,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=add_contact_number'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'phone_number': phoneNumber,
-          'number_type': numberType,
-          'contact_name': contactName,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=add_contact_number'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'phone_number': phoneNumber,
+              'number_type': numberType,
+              'contact_name': contactName,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
+
+      print('ADD CONTACT STATUS: ${response.statusCode}');
+      print('ADD CONTACT BODY: ${response.body}');
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
-        return result['success'] == true;
+        return result['success'] == true ||
+            result['saved'] == true ||
+            result['message']?.toString().toLowerCase().contains('success') ==
+                true;
       }
       return false;
     } catch (e) {
@@ -690,14 +783,16 @@ class ApiService {
     required int contactId,
   }) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=delete_contact_number'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'device_uuid': deviceUuid,
-          'contact_id': contactId,
-        }),
-      ).timeout(Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=delete_contact_number'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'contact_id': contactId,
+            }),
+          )
+          .timeout(Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body);
@@ -709,6 +804,7 @@ class ApiService {
       return false;
     }
   }
+
   Future<Map<String, dynamic>?> accessoryPair({
     required String hubDeviceUuid,
     required String accessoryUuid,
@@ -722,25 +818,29 @@ class ApiService {
     try {
       final body = {
         'hub_device_uuid': hubDeviceUuid,
-        'accessory_uuid':  accessoryUuid,
-        'name':            name,
-        'type':            type,
-        'zone_name':       zoneName,
-        'status':          status,
-        if (remoteMode   != null) 'remote_mode':    remoteMode,
+        'accessory_uuid': accessoryUuid,
+        'name': name,
+        'type': type,
+        'zone_name': zoneName,
+        'status': status,
+        if (remoteMode != null) 'remote_mode': remoteMode,
         if (deviceBleName != null) 'device_ble_name': deviceBleName,
       };
 
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=accessory_pair'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(body),
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=accessory_pair'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body) as Map<String, dynamic>;
+        print('✅ accessoryPair response: $decoded');
+        return decoded;
       }
-      print('❌ accessoryPair HTTP ${response.statusCode}');
+      print('❌ accessoryPair HTTP ${response.statusCode}: ${response.body}');
       return null;
     } catch (e) {
       print('❌ accessoryPair error: $e');
@@ -752,13 +852,11 @@ class ApiService {
   Future<List<dynamic>> accessoryList(String hubDeviceUuid,
       {String? type}) async {
     try {
-      var url =
-          '$baseUrl?action=accessory_list&hub_device_uuid=$hubDeviceUuid';
+      var url = '$baseUrl?action=accessory_list&hub_device_uuid=$hubDeviceUuid';
       if (type != null) url += '&type=$type';
 
-      final response = await http
-          .get(Uri.parse(url))
-          .timeout(const Duration(seconds: 10));
+      final response =
+          await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body)['accessories'] ?? [];
@@ -773,11 +871,13 @@ class ApiService {
   /// Soft-delete a paired accessory by its UUID.
   Future<bool> accessoryDelete(String accessoryUuid) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=accessory_delete'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'accessory_uuid': accessoryUuid}),
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=accessory_delete'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'accessory_uuid': accessoryUuid}),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         return json.decode(response.body)['success'] == true;
@@ -800,10 +900,12 @@ class ApiService {
   /// that hub, or { has_request: false } if nothing is pending.
   Future<PairingRequestResult> getPairingRequest(String hubDeviceUuid) async {
     try {
-      final response = await http.get(
-        Uri.parse(
-            '$baseUrl?action=get_pairing_request&device_uuid=$hubDeviceUuid'),
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse(
+                '$baseUrl?action=get_pairing_request&device_uuid=$hubDeviceUuid'),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body) as Map<String, dynamic>;
@@ -827,24 +929,26 @@ class ApiService {
   /// [deviceBleName]  — BLE advertised name of the sensor
   /// [status]         — 'paired' or 'failed'
   Future<bool> accessoryUpdatePairingStatus({
-    required int     pairingId,
-    String?          accessoryUuid,   // real BLE MAC — null if no ACK received
-    String?          deviceBleName,
-    required String  status,          // 'paired' | 'failed' | 'timeout'
+    required int pairingId,
+    String? accessoryUuid, // real BLE MAC — null if no ACK received
+    String? deviceBleName,
+    required String status, // 'paired' | 'failed' | 'timeout'
   }) async {
     try {
       final body = <String, dynamic>{
         'pairing_id': pairingId,
-        'status':     status,
-        if (accessoryUuid  != null) 'accessory_uuid':  accessoryUuid,
-        if (deviceBleName  != null) 'device_ble_name': deviceBleName,
+        'status': status,
+        if (accessoryUuid != null) 'accessory_uuid': accessoryUuid,
+        if (deviceBleName != null) 'device_ble_name': deviceBleName,
       };
 
-      final response = await http.post(
-        Uri.parse('$baseUrl?action=update_pairing_status'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(body),
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=update_pairing_status'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = json.decode(response.body) as Map<String, dynamic>;
@@ -857,6 +961,95 @@ class ApiService {
     }
   }
 
+  Future<bool> postAlarmEvent({
+    required String deviceUuid,
+    required String eventType, // 'ALARM_START' | 'ALARM_TRIGGER' | 'ALARM_STOP'
+    String zone = '',
+    String message = '',
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl?action=alarm_event'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'device_uuid': deviceUuid,
+              'event_type': eventType,
+              'zone': zone,
+              'message': message,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        final result = json.decode(response.body) as Map<String, dynamic>;
+        return result['success'] == true;
+      }
+      return false;
+    } catch (e) {
+      print('❌ postAlarmEvent error: $e');
+      return false;
+    }
+  }
+
+  Future<List<dynamic>> getAlarmEvents(String deviceUuid) async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+            '$baseUrl?action=alarm_events&device_uuid=$deviceUuid&latest=true'),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['events'] ?? [];
+      }
+    } catch (e) {
+      print('Error fetching alarm events: $e');
+    }
+    return [];
+  }
+
+  Future<Map<String, dynamic>?> getAlarmStatus(String deviceUuid) async {
+    try {
+      final response = await http
+          .get(
+            Uri.parse(
+                '$baseUrl?action=get_alarm_status&device_uuid=$deviceUuid&include_devices=true'),
+          )
+          .timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      return null;
+    } catch (e) {
+      print('❌ Get alarm status error: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getLatestEvent(String deviceUuid) async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl?action=latest_event&device_uuid=$deviceUuid'),
+      );
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+
+        if (data is Map<String, dynamic>) {
+          return data;
+        }
+
+        return null;
+        //return json.decode(res.body);
+      }
+    } catch (e) {
+      print('❌ getLatestEvent error: $e');
+    }
+    return null;
+  }
+
   // ── GET WIFI UUID BY BLE MAC ────────────────────────────────────────────
   // After Flutter sends WiFi credentials via BLE, the ESP32 connects to WiFi
   // and calls index.php?uuid=ESP32_ALARM_XXXX. PHP merges the BLE MAC record
@@ -864,9 +1057,11 @@ class ApiService {
   // Returns the WiFi UUID (e.g. "ESP32_ALARM_70A2A0A0DC5194") or null if not found.
   Future<String?> getWifiUuidByBleUuid(String bleMac) async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl?action=device_list'),
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl?action=device_list'),
+          )
+          .timeout(const Duration(seconds: 20));
 
       if (response.statusCode != 200) return null;
 
@@ -874,13 +1069,12 @@ class ApiService {
       final devices = result['devices'] as List<dynamic>? ?? [];
 
       for (final device in devices) {
-        final uuid   = device['device_uuid']?.toString() ?? '';
+        final uuid = device['device_uuid']?.toString() ?? '';
         final bleSvc = device['ble_service_uuid']?.toString() ?? '';
 
         // Match: ble_service_uuid equals our BLE MAC
         // AND device_uuid is now a WiFi UUID (not a MAC address format XX:XX:XX:XX:XX:XX)
-        final isMac = RegExp(r'^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$').hasMatch(uuid);
-        if (bleSvc == bleMac && !isMac && uuid.isNotEmpty) {
+        if ((bleSvc == bleMac || uuid == bleMac) && uuid.isNotEmpty) {
           print('✅ WiFi UUID found: $uuid (ble_mac=$bleSvc)');
           return uuid;
         }
@@ -897,13 +1091,13 @@ class ApiService {
 // PairingRequestResult — returned by getPairingRequest()
 // ============================================================
 class PairingRequestResult {
-  final bool    hasRequest;
-  final int?    pairingId;
+  final bool hasRequest;
+  final int? pairingId;
   final String? accessoryUuid;
-  final String? accessoryType;   // 'remote' | 'motion' | 'door'
+  final String? accessoryType; // 'remote' | 'motion' | 'door'
   final String? accessoryName;
   final String? zoneName;
-  final String? remoteMode;      // 'armed' | 'disarmed' | null
+  final String? remoteMode; // 'armed' | 'disarmed' | null
   final String? requestedAt;
 
   PairingRequestResult({
@@ -923,16 +1117,16 @@ class PairingRequestResult {
   factory PairingRequestResult.fromJson(Map<String, dynamic> json) {
     if (json['has_request'] != true) return PairingRequestResult.none();
     return PairingRequestResult(
-      hasRequest:    true,
-      pairingId:     json['pairing_id'] is int
+      hasRequest: true,
+      pairingId: json['pairing_id'] is int
           ? json['pairing_id']
           : int.tryParse('${json['pairing_id']}'),
       accessoryUuid: json['accessory_uuid'],
       accessoryType: json['accessory_type'],
       accessoryName: json['accessory_name'],
-      zoneName:      json['zone_name'],
-      remoteMode:    json['remote_mode'],
-      requestedAt:   json['requested_at'],
+      zoneName: json['zone_name'],
+      remoteMode: json['remote_mode'],
+      requestedAt: json['requested_at'],
     );
   }
 }

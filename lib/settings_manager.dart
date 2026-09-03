@@ -19,7 +19,8 @@ class SettingsManager {
   // ============================================================================
 
   /// User-visible display name for this device (shown in UI, stored in device_registry.device_name)
-  String get deviceName => _prefs?.getString('device_name') ?? 'My Alarm System';
+  String get deviceName =>
+      _prefs?.getString('device_name') ?? 'My Alarm System';
   Future<void> setDeviceName(String value) async =>
       _prefs?.setString('device_name', value);
 
@@ -34,6 +35,21 @@ class SettingsManager {
       _prefs?.getString('connected_device_uuid') ?? '';
   Future<void> setConnectedDeviceUuid(String value) async =>
       _prefs?.setString('connected_device_uuid', value);
+  Future<void> clearConnectedDevice() async {
+    await _prefs?.remove('connected_device_uuid');
+    await _prefs?.remove('device_name');
+    await _prefs?.remove('hub_language');
+    await _prefs?.remove('current_device_role');
+  }
+
+  String get currentDeviceRole =>
+      _prefs?.getString('current_device_role') ?? 'user';
+  Future<void> setCurrentDeviceRole(String value) async => _prefs?.setString(
+        'current_device_role',
+        value == 'admin' ? 'admin' : 'user',
+      );
+
+  bool get canManageCurrentDevice => currentDeviceRole == 'admin';
 
   bool get isDeviceConfigured => connectedDeviceUuid.isNotEmpty;
 
@@ -53,8 +69,7 @@ class SettingsManager {
   }
 
   Future<void> setSchedules(List<AlarmSchedule> schedules) async {
-    final schedulesJson =
-    schedules.map((s) => jsonEncode(s.toJson())).toList();
+    final schedulesJson = schedules.map((s) => jsonEncode(s.toJson())).toList();
     await _prefs?.setStringList('alarm_schedules', schedulesJson);
   }
 
@@ -89,8 +104,7 @@ class SettingsManager {
     }
   }
 
-  bool isAnyScheduleActive() =>
-      getSchedules().any((s) => s.isActiveNow());
+  bool isAnyScheduleActive() => getSchedules().any((s) => s.isActiveNow());
 
   AlarmSchedule? getActiveSchedule() {
     try {
@@ -122,12 +136,16 @@ class SettingsManager {
   // ============================================================================
 
   bool get alarmSound => _prefs?.getBool('alarm_sound') ?? true;
-  Future<void> setAlarmSound(bool value) async =>
-      _prefs?.setBool('alarm_sound', value);
+  Future<void> setAlarmSound(bool value) async {
+    await _prefs?.setBool('alarm_sound', value);
+    await _prefs?.setBool('alarm_sound_enabled', value);
+  }
 
   bool get alarmNotification => _prefs?.getBool('alarm_notification') ?? true;
-  Future<void> setAlarmNotification(bool value) async =>
-      _prefs?.setBool('alarm_notification', value);
+  Future<void> setAlarmNotification(bool value) async {
+    await _prefs?.setBool('alarm_notification', value);
+    await _prefs?.setBool('notification_enabled', true);
+  }
 
   bool get countdownWithTickTone =>
       _prefs?.getBool('countdown_with_tick_tone') ?? true;

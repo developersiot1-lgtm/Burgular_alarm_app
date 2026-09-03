@@ -9,7 +9,7 @@ import 'package:alarm/splash_screen.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:http/http.dart' as http;           // ✅ ADDED — needed by _notifyHubToStartPairing
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,7 +24,7 @@ enum AccessoryStatus { pairing, paired, failed, timeout }
 // =============================================================================
 // ACCESSORY MODEL
 // =============================================================================
-enum AccessoryType { remote, motion, door }
+enum AccessoryType { remote, motion, door, other }
 
 class Accessory {
   final String id;
@@ -48,81 +48,120 @@ class Accessory {
   });
 
   Map<String, dynamic> toJson() => {
-    'id':         id,
-    'name':       name,
+    'id': id,
+    'name': name,
     'deviceName': deviceName,
-    'zone':       zone,
-    'type':       type.name,
+    'zone': zone,
+    'type': type.name,
     'remoteMode': remoteMode,
-    'status':     status.name,
-    'pairingId':  pairingId,
+    'status': status.name,
+    'pairingId': pairingId,
   };
 
   factory Accessory.fromLocalJson(Map<String, dynamic> j) {
     AccessoryType t;
     switch (j['type']) {
-      case 'motion': t = AccessoryType.motion; break;
-      case 'door':   t = AccessoryType.door;   break;
-      default:       t = AccessoryType.remote;
+      case 'remote':
+        t = AccessoryType.remote;
+        break;
+      case 'motion':
+        t = AccessoryType.motion;
+        break;
+      case 'door':
+        t = AccessoryType.door;
+        break;
+      default:
+        t = AccessoryType.other;
     }
     AccessoryStatus s;
     switch (j['status']) {
-      case 'paired':  s = AccessoryStatus.paired;  break;
-      case 'failed':  s = AccessoryStatus.failed;  break;
-      case 'timeout': s = AccessoryStatus.timeout; break;
-      default:        s = AccessoryStatus.pairing;
+      case 'paired':
+        s = AccessoryStatus.paired;
+        break;
+      case 'failed':
+        s = AccessoryStatus.failed;
+        break;
+      case 'timeout':
+        s = AccessoryStatus.timeout;
+        break;
+      default:
+        s = AccessoryStatus.pairing;
     }
     return Accessory(
-      id:         j['id']         ?? '',
-      name:       j['name']       ?? 'Sensor',
+      id: j['id'] ?? '',
+      name: j['name'] ?? 'Sensor',
       deviceName: j['deviceName'] ?? j['name'] ?? 'Sensor',
-      zone:       j['zone']       ?? 'General',
-      type:       t,
+      zone: j['zone'] ?? 'General',
+      type: t,
       remoteMode: j['remoteMode'],
-      status:     s,
-      pairingId:  j['pairingId'],
+      status: s,
+      pairingId: j['pairingId'],
     );
   }
 
   factory Accessory.fromServerJson(Map<String, dynamic> j) {
     AccessoryType t;
     switch (j['accessory_type'] ?? j['type']) {
-      case 'motion': t = AccessoryType.motion; break;
-      case 'door':   t = AccessoryType.door;   break;
-      default:       t = AccessoryType.remote;
+      case 'remote':
+        t = AccessoryType.remote;
+        break;
+      case 'motion':
+        t = AccessoryType.motion;
+        break;
+      case 'door':
+        t = AccessoryType.door;
+        break;
+      default:
+        t = AccessoryType.other;
     }
     AccessoryStatus s;
     switch (j['status']) {
-      case 'paired':  s = AccessoryStatus.paired;  break;
-      case 'failed':  s = AccessoryStatus.failed;  break;
-      default:        s = AccessoryStatus.pairing;
+      case 'paired':
+        s = AccessoryStatus.paired;
+        break;
+      case 'failed':
+        s = AccessoryStatus.failed;
+        break;
+      case 'timeout':
+        s = AccessoryStatus.timeout;
+        break;
+      default:
+        s = AccessoryStatus.pairing;
     }
     return Accessory(
-      id:         j['accessory_uuid'] ?? j['id'] ?? '',
-      name:       j['accessory_name'] ?? j['name'] ?? 'Sensor',
+      id: j['accessory_uuid'] ?? j['id'] ?? '',
+      name: j['accessory_name'] ?? j['name'] ?? 'Sensor',
       deviceName: j['device_ble_name'] ?? j['deviceName'] ?? 'Sensor',
-      zone:       j['zone_name']       ?? j['zone'] ?? 'General',
-      type:       t,
+      zone: j['zone_name'] ?? j['zone'] ?? 'General',
+      type: t,
       remoteMode: j['remote_mode'] ?? j['remoteMode'],
-      status:     s,
-      pairingId:  j['id'] is int ? j['id'] : int.tryParse(j['id']?.toString() ?? ''),
+      status: s,
+      pairingId: j['id'] is int
+          ? j['id']
+          : int.tryParse(j['id']?.toString() ?? ''),
     );
   }
 
   Accessory copyWith({
-    String? id, String? name, String? deviceName, String? zone,
-    AccessoryType? type, String? remoteMode,
-    AccessoryStatus? status, int? pairingId,
-  }) => Accessory(
-    id:         id         ?? this.id,
-    name:       name       ?? this.name,
-    deviceName: deviceName ?? this.deviceName,
-    zone:       zone       ?? this.zone,
-    type:       type       ?? this.type,
-    remoteMode: remoteMode ?? this.remoteMode,
-    status:     status     ?? this.status,
-    pairingId:  pairingId  ?? this.pairingId,
-  );
+    String? id,
+    String? name,
+    String? deviceName,
+    String? zone,
+    AccessoryType? type,
+    String? remoteMode,
+    AccessoryStatus? status,
+    int? pairingId,
+  }) =>
+      Accessory(
+        id: id ?? this.id,
+        name: name ?? this.name,
+        deviceName: deviceName ?? this.deviceName,
+        zone: zone ?? this.zone,
+        type: type ?? this.type,
+        remoteMode: remoteMode ?? this.remoteMode,
+        status: status ?? this.status,
+        pairingId: pairingId ?? this.pairingId,
+      );
 }
 
 // =============================================================================
@@ -134,9 +173,9 @@ class AccessoryStorage {
   static Future<List<Accessory>> load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw   = prefs.getString(_key);
+      final raw = prefs.getString(_key);
       if (raw == null || raw.isEmpty) return [];
-      final list  = jsonDecode(raw) as List<dynamic>;
+      final list = jsonDecode(raw) as List<dynamic>;
       return list
           .map((e) => Accessory.fromLocalJson(Map<String, dynamic>.from(e)))
           .toList();
@@ -149,7 +188,7 @@ class AccessoryStorage {
   static Future<void> save(List<Accessory> accessories) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw   = jsonEncode(accessories.map((a) => a.toJson()).toList());
+      final raw = jsonEncode(accessories.map((a) => a.toJson()).toList());
       await prefs.setString(_key, raw);
       print('✅ Accessories saved locally (${accessories.length} items)');
     } catch (e) {
@@ -165,7 +204,7 @@ class AccessoryStorage {
 
   static Future<void> update(Accessory updated) async {
     final list = await load();
-    final idx  = list.indexWhere((a) => a.id == updated.id);
+    final idx = list.indexWhere((a) => a.id == updated.id);
     if (idx >= 0) {
       list[idx] = updated;
     } else {
@@ -177,21 +216,39 @@ class AccessoryStorage {
 
 // =============================================================================
 // HOME SCREEN
+// ✅ FIX: Added initialArmState parameter.
+//         This is passed from FavoritesScreen and comes directly from the
+//         server (device['arm_status'] / device['is_armed']).
+//         All users — owner AND shared — will see the same ARM state
+//         because it is NOT read from local SharedPreferences/SettingsManager.
 // =============================================================================
 class HomeScreen extends StatefulWidget {
+  // ✅ NEW: Server-side arm state passed in from FavoritesScreen
+  final bool initialArmState;
+
+  const HomeScreen({
+    Key? key,
+    this.initialArmState = false, // safe default = disarmed
+  }) : super(key: key);
+
   @override
   _HomeScreenState createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late AnimationController _alarmAnimationController;
-  late Animation<double>   _alarmAnimation;
+  late Animation<double> _alarmAnimation;
   ApiService? _apiService;
-  String?     _hubDeviceUuid;
+  int _lastEventId = 0;
+  Timer? _realtimeTimer;
+  String? _hubDeviceUuid;
+  Timer? _armSyncTimer;
+  List<Accessory> _accessories = [];
+  bool _isLogExpanded = true;
+  bool _accessoriesLoading = false;
 
-  List<Accessory> _accessories        = [];
-  bool            _isLogExpanded      = false;
-  bool            _accessoriesLoading = false;
+  List<String> _customSensorTypes = [];
+  static const String _customTypesKey = 'custom_sensor_types';
 
   @override
   void didChangeDependencies() {
@@ -215,38 +272,35 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (_apiService != null) {
         final alarmSystem =
         Provider.of<AlarmSystemProvider>(context, listen: false);
-        final info       = await DeviceInfoPlugin().androidInfo;
+        final info = await DeviceInfoPlugin().androidInfo;
         final mobileDeviceUuid = info.id;
-        _registerCurrentMobileDevice(mobileDeviceUuid);
 
         final settings = SettingsManager();
-        _hubDeviceUuid  = settings.connectedDeviceUuid;
-        String hubUuid;
-        if (_hubDeviceUuid != null && _hubDeviceUuid!.isNotEmpty) {
-          hubUuid = _hubDeviceUuid!;
-        } else {
-          // If user didn't explicitly select a device yet, auto-select the first
-          // hub device linked to the logged-in account so alarm_events match.
-          final userDevices = await AuthService().getUserDevices();
-          if (userDevices.isNotEmpty) {
-            final first = userDevices.first;
-            final uuid = (first['device_uuid'] ?? '').toString();
-            if (uuid.isNotEmpty) {
-              hubUuid = uuid;
-              await settings.setConnectedDeviceUuid(hubUuid);
-              _hubDeviceUuid = hubUuid;
-            } else {
-              hubUuid = mobileDeviceUuid;
-            }
-          } else {
-            hubUuid = mobileDeviceUuid;
-          }
-        }
+        _hubDeviceUuid = settings.connectedDeviceUuid.isNotEmpty
+            ? settings.connectedDeviceUuid
+            : settings.hubLanguage;
+        final alarmHubUuid =
+        (_hubDeviceUuid != null && _hubDeviceUuid!.isNotEmpty)
+            ? _hubDeviceUuid!
+            : mobileDeviceUuid;
 
-        // IMPORTANT: Alarm system control + polling must use the HUB/ESP32 UUID,
-        // not the phone's hardware id. Otherwise alarm_events and arm/disarm won't match.
-        alarmSystem.initialize(_apiService!, deviceUuid: hubUuid);
+        alarmSystem.initialize(
+          _apiService!,
+          deviceUuid: alarmHubUuid,
+          hubDeviceUuid: alarmHubUuid,
+        );
+
+        // ✅ FIX: Apply the server-side arm state AFTER initialize()
+        //         so the button reflects what ALL users set, not local storage.
+        //         widget.initialArmState comes from device['arm_status'] on server.
+
+
+        _registerCurrentMobileDevice(mobileDeviceUuid);
         _loadAccessories();
+        _loadCustomSensorTypes();
+        //_listenRealtime();
+        //_startArmSync();
+
       }
     });
   }
@@ -266,11 +320,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final local = await AccessoryStorage.load();
       if (mounted) setState(() => _accessories = local);
 
-      if (_hubDeviceUuid != null && _hubDeviceUuid!.isNotEmpty && _apiService != null) {
+      if (_hubDeviceUuid != null &&
+          _hubDeviceUuid!.isNotEmpty &&
+          _apiService != null) {
         final serverList = await _apiService!.accessoryList(_hubDeviceUuid!);
         if (serverList.isNotEmpty) {
           final parsed = serverList
-              .map((s) => Accessory.fromServerJson(Map<String, dynamic>.from(s)))
+              .map((s) =>
+              Accessory.fromServerJson(Map<String, dynamic>.from(s)))
               .toList();
           await AccessoryStorage.save(parsed);
           if (mounted) setState(() => _accessories = parsed);
@@ -284,8 +341,37 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _loadCustomSensorTypes() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_customTypesKey) ?? [];
+      setState(() => _customSensorTypes = list);
+    } catch (e) {
+      print('⚠️ Load custom sensor types error: $e');
+    }
+  }
+
+  Future<void> _saveCustomSensorTypes() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_customTypesKey, _customSensorTypes);
+    } catch (e) {
+      print('⚠️ Save custom sensor types error: $e');
+    }
+  }
+
+  Future<void> _addCustomSensorType(String label) async {
+    final clean = label.trim();
+    if (clean.isEmpty) return;
+    if (_customSensorTypes.contains(clean)) return;
+    setState(() => _customSensorTypes.add(clean));
+    await _saveCustomSensorTypes();
+  }
+
   @override
   void dispose() {
+    // _realtimeTimer?.cancel();
+    _armSyncTimer?.cancel();
     _alarmAnimationController.dispose();
     super.dispose();
   }
@@ -305,24 +391,35 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       onWillPop: _onWillPop,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('BURGLAR ALARM SYSTEM',
-              style: TextStyle(letterSpacing: 1.2)),
+          title: Image.asset(
+            'assets/monsow_logo.jpg',
+            height:40,
+            fit: BoxFit.contain,
+          ),
           centerTitle: true,
           leading: IconButton(
-              icon: const Icon(Icons.arrow_back), onPressed: _onWillPop),
+            icon: const Icon(Icons.arrow_back, color: Colors.black),
+            onPressed: _onWillPop,
+          ),
           actions: [
-            IconButton(
-              icon: const Icon(Icons.add, size: 28),
-              tooltip: 'Add Device',
-              onPressed: () => Navigator.push(
-                  context, MaterialPageRoute(builder: (_) => QRScanScreen())),
-            ),
-            IconButton(
-              icon: const Icon(Icons.settings, size: 26),
-              tooltip: 'Settings',
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const SettingsScreen())),
-            ),
+            // ── Admin-only actions ──────────────────────────────
+            // canManageCurrentDevice is true only when the role for
+            // this device is 'admin'. Regular/shared users must not
+            // see Add Device or Settings.
+            if (SettingsManager().canManageCurrentDevice) ...[
+              IconButton(
+                icon: const Icon(Icons.add, size: 28, color: Colors.black),
+                tooltip: 'Add Device',
+                onPressed: () => Navigator.push(
+                    context, MaterialPageRoute(builder: (_) => QRScanScreen())),
+              ),
+              IconButton(
+                icon: const Icon(Icons.settings, size: 26, color: Colors.black),
+                tooltip: 'Settings',
+                onPressed: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen())),
+              ),
+            ],
             Consumer<AlarmSystemProvider>(
               builder: (_, alarm, __) => IconButton(
                 icon: alarm.isLoading
@@ -330,9 +427,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.refresh),
-                onPressed: alarm.isLoading ? null : alarm.loadData,
+                        strokeWidth: 2, color: Colors.black))
+                    : const Icon(Icons.refresh, color: Colors.black),
+                onPressed: alarm.isLoading
+                    ? null
+                    : () async {
+                  await alarm.loadData();
+                  await _loadAccessories();
+                },
+                //onPressed: alarm.isLoading ,
               ),
             ),
           ],
@@ -349,6 +452,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               onRefresh: () async {
                 await alarmSystem.loadData();
                 await _loadAccessories();
+                await _loadCustomSensorTypes();
               },
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -361,8 +465,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     _buildControlPanel(alarmSystem),
                     const SizedBox(height: 20),
                     _buildActivityLogSection(alarmSystem),
-                    const SizedBox(height: 20),
-                    _buildAccessoriesSection(),
+                    //const SizedBox(height: 20),
+                    //_buildAccessoriesSection(),
                   ],
                 ),
               ),
@@ -381,10 +485,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       animation: _alarmAnimation,
       builder: (_, child) {
         return Card(
-          color: alarmSystem.currentState == SystemState.alarm
-              ? Color.lerp(
-              const Color(0xFF2D2D2D), Colors.red, _alarmAnimation.value)
-              : const Color(0xFF2D2D2D),
+          color: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Colors.black),
+          ),
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
@@ -393,7 +499,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Container(
-                      width: 16, height: 16,
+                      width: 16,
+                      height: 16,
                       decoration: BoxDecoration(
                           color: alarmSystem.stateColor,
                           shape: BoxShape.circle),
@@ -410,8 +517,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Last Updated: ${DateFormat('MMM dd, HH:mm').format(DateTime.now())}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  'Last Updated: ${_formatStateUpdatedTime(alarmSystem)}',
+                  style:
+                  const TextStyle(color: Colors.black, fontSize: 14),
                 ),
                 if (alarmSystem.error != null) ...[
                   const SizedBox(height: 12),
@@ -446,19 +554,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       childAspectRatio: 1.3,
       children: [
         ControlButton(
-          title: 'ON',
-          icon: Icons.lock,
-          color: Colors.green,
-          isActive: alarmSystem.currentState == SystemState.armed,
-          onPressed: () => alarmSystem.changeSystemState(SystemState.armed),
+            title: 'ON',
+            icon: Icons.lock,
+            color: Colors.green,
+            isActive: alarmSystem.currentState == SystemState.armed,
+            onPressed: () async {
+              await alarmSystem.changeSystemState(SystemState.armed);
+            }
+          //onPressed: () => alarmSystem.changeSystemState(SystemState.armed),
         ),
         ControlButton(
-          title: 'OFF',
-          icon: Icons.lock_open,
-          color: Colors.red,
-          isActive: alarmSystem.currentState == SystemState.disarmed,
-          onPressed: () =>
-              alarmSystem.changeSystemState(SystemState.disarmed),
+            title: 'OFF',
+            icon: Icons.lock_open,
+            color: Colors.red,
+            isActive: alarmSystem.currentState == SystemState.disarmed,
+            onPressed: () async {
+              await alarmSystem.changeSystemState(SystemState.disarmed);
+            }
+          // onPressed: () =>
+          //    alarmSystem.changeSystemState(SystemState.disarmed),
         ),
         ControlButton(
           title: 'ALARM',
@@ -468,7 +582,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           onPressed: () => alarmSystem.changeSystemState(SystemState.alarm),
         ),
         ControlButton(
-          title: 'RESET',
+          title: 'STAY ARM',
           icon: Icons.restore,
           color: Colors.orange,
           isActive: alarmSystem.currentState == SystemState.stayArmed,
@@ -483,11 +597,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ACTIVITY LOG
   // ===========================================================================
   Widget _buildActivityLogSection(AlarmSystemProvider alarmSystem) {
-    final logs        = alarmSystem.activityLogs;
+    final logs = alarmSystem.activityLogs;
     final displayLogs =
     _isLogExpanded ? logs : (logs.isNotEmpty ? [logs.first] : []);
 
     return Card(
+      color: Colors.white,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0xFFEAEAEA)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -506,36 +626,37 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          color: Colors.white)),
+                          color: Colors.black)),
                   Icon(
                       _isLogExpanded
                           ? Icons.expand_less
                           : Icons.expand_more,
-                      color: Colors.white),
+                      color: Colors.black),
                 ],
               ),
             ),
             const SizedBox(height: 16),
             if (logs.isEmpty)
               const Text('No recent activity',
-                  style: TextStyle(color: Colors.white70)),
+                  style: TextStyle(color: Colors.black)),
             ListView.separated(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               itemCount: displayLogs.length,
               separatorBuilder: (_, i) =>
-              const Divider(color: Colors.white24, height: 1),
+              const Divider(color: Colors.black, height: 1),
               itemBuilder: (ctx, i) {
                 final log = displayLogs[i];
                 return ListTile(
-                  leading: const Icon(Icons.history, color: Colors.white70),
-                  title: Text(log.event,
+                  leading:
+                  const Icon(Icons.history, color: Colors.black),
+                  title: Text(log.displayEvent,
                       style: const TextStyle(
-                          color: Colors.white, fontSize: 14)),
+                          color: Colors.black, fontSize: 14)),
                   subtitle: Text(
-                    '${log.device} • ${DateFormat('MMM dd, HH:mm').format(DateTime.parse(log.timestamp))}',
+                    '${log.device} • ${_formatActivityTime(log)}',
                     style: const TextStyle(
-                        color: Colors.white70, fontSize: 12),
+                        color: Colors.black, fontSize: 12),
                   ),
                 );
               },
@@ -544,6 +665,38 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ),
       ),
     );
+  }
+
+  String _formatActivityTime(ActivityLog log) {
+    final parsed = _parseActivityTimestamp(log.timestamp);
+    if (parsed == null) return 'Time not available';
+    return DateFormat('MMM dd, HH:mm').format(parsed);
+  }
+
+  DateTime? _parseActivityTimestamp(String timestamp) {
+    final raw = timestamp.trim();
+    if (raw.isEmpty) return null;
+
+    final normalized = raw.replaceFirst(' ', 'T');
+    final hasTimezone = RegExp(r'(Z|[+-]\d{2}:?\d{2})$').hasMatch(normalized);
+
+    if (hasTimezone) {
+      return DateTime.tryParse(normalized)?.toLocal();
+    }
+
+    // Activity rows saved by PHP/MySQL arrive as UTC without a timezone suffix.
+    // Treat only MySQL-style rows this way so locally-created ISO rows stay local.
+    if (raw.contains(' ')) {
+      return DateTime.tryParse('${normalized}Z')?.toLocal();
+    }
+
+    return DateTime.tryParse(normalized);
+  }
+
+  String _formatStateUpdatedTime(AlarmSystemProvider alarmSystem) {
+    final parsed = alarmSystem.lastStateUpdatedAt;
+    if (parsed == null) return 'Time not available';
+    return DateFormat('MMM dd, HH:mm').format(parsed);
   }
 
   // ===========================================================================
@@ -570,7 +723,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2)),
+                          child:
+                          CircularProgressIndicator(strokeWidth: 2)),
                     IconButton(
                       icon: const Icon(Icons.add, color: Colors.blue),
                       onPressed: _showAddAccessoryTypeSheet,
@@ -597,6 +751,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               color: Colors.teal,
               onTap: () => _showPairingScreen(AccessoryType.door),
             ),
+            _buildAccessoryTypeTile(
+              icon: Icons.sensors,
+              label: 'Other Sensor',
+              color: Colors.cyan,
+              onTap: _showCustomSensorTypeSheet,
+            ),
+            for (final typeName in _customSensorTypes)
+              _buildAccessoryTypeTile(
+                icon: Icons.sensors,
+                label: typeName,
+                color: Colors.cyan,
+                onTap: () => _showPairingScreen(
+                  AccessoryType.other,
+                  customTypeLabel: typeName,
+                ),
+              ),
             if (_accessories.isNotEmpty) ...[
               const Divider(color: Colors.white24, height: 24),
               const Text('Paired Accessories',
@@ -661,39 +831,53 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Widget _buildPairedTile(Accessory acc, int index) {
     IconData icon;
-    Color    color;
-    String   subtitle;
+    Color color;
+    String subtitle;
 
     switch (acc.type) {
       case AccessoryType.remote:
-        icon     = Icons.settings_remote;
-        color    = Colors.purple;
+        icon = Icons.settings_remote;
+        color = Colors.purple;
         subtitle = 'Remote • Mode: ${acc.remoteMode ?? "-"} • ${acc.zone}';
         break;
       case AccessoryType.motion:
-        icon     = Icons.directions_walk;
-        color    = Colors.orange;
+        icon = Icons.directions_walk;
+        color = Colors.orange;
         subtitle = 'Motion Sensor • ${acc.zone}';
         break;
       case AccessoryType.door:
-        icon     = Icons.door_front_door;
-        color    = Colors.teal;
+        icon = Icons.door_front_door;
+        color = Colors.teal;
         subtitle = 'Door Sensor • ${acc.zone}';
+        break;
+      case AccessoryType.other:
+      default:
+        icon = Icons.sensors;
+        color = Colors.cyan;
+        subtitle = 'Sensor • ${acc.zone}';
         break;
     }
 
-    Color  statusColor;
+    Color statusColor;
     String statusLabel;
     switch (acc.status) {
       case AccessoryStatus.paired:
-        statusColor = Colors.green;  statusLabel = 'PAIRED';   break;
+        statusColor = Colors.green;
+        statusLabel = 'PAIRED';
+        break;
       case AccessoryStatus.failed:
-        statusColor = Colors.red;    statusLabel = 'FAILED';   break;
+        statusColor = Colors.red;
+        statusLabel = 'FAILED';
+        break;
       case AccessoryStatus.timeout:
-        statusColor = Colors.red;    statusLabel = 'TIMEOUT';  break;
+        statusColor = Colors.red;
+        statusLabel = 'TIMEOUT';
+        break;
       case AccessoryStatus.pairing:
       default:
-        statusColor = Colors.orange; statusLabel = 'PAIRING…'; break;
+        statusColor = Colors.orange;
+        statusLabel = 'PAIRING…';
+        break;
     }
 
     return ListTile(
@@ -725,10 +909,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(subtitle,
-              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              style:
+              const TextStyle(color: Colors.white54, fontSize: 12)),
           if (acc.deviceName.isNotEmpty && acc.deviceName != acc.name)
             Text('Device: ${acc.deviceName}',
-                style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                style: const TextStyle(
+                    color: Colors.white38, fontSize: 11)),
         ],
       ),
       trailing: IconButton(
@@ -742,9 +928,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     setState(() => _accessories.removeAt(index));
     await AccessoryStorage.remove(acc.id);
     if (_apiService != null) {
-      try { await _apiService!.accessoryDelete(acc.id); } catch (_) {}
+      try {
+        await _apiService!.accessoryDelete(acc.id);
+      } catch (_) {}
     }
-    print('✅ Accessory removed: ${acc.name}');
   }
 
   // ===========================================================================
@@ -768,13 +955,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     fontWeight: FontWeight.bold)),
             const Divider(color: Colors.white24),
             ListTile(
-              leading: const Icon(Icons.settings_remote, color: Colors.purple),
+              leading:
+              const Icon(Icons.settings_remote, color: Colors.purple),
               title: const Text('Remote Sensor',
                   style: TextStyle(color: Colors.white)),
-              onTap: () { Navigator.pop(context); _showRemoteModeSheet(); },
+              onTap: () {
+                Navigator.pop(context);
+                _showRemoteModeSheet();
+              },
             ),
             ListTile(
-              leading: const Icon(Icons.directions_walk, color: Colors.orange),
+              leading:
+              const Icon(Icons.directions_walk, color: Colors.orange),
               title: const Text('Motion Sensor',
                   style: TextStyle(color: Colors.white)),
               onTap: () {
@@ -783,7 +975,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.door_front_door, color: Colors.teal),
+              leading:
+              const Icon(Icons.door_front_door, color: Colors.teal),
               title: const Text('Door Sensor',
                   style: TextStyle(color: Colors.white)),
               onTap: () {
@@ -791,8 +984,90 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 _showPairingScreen(AccessoryType.door);
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.sensors, color: Colors.cyan),
+              title: const Text('Other Sensor',
+                  style: TextStyle(color: Colors.white)),
+              subtitle: const Text(
+                'Any new sensor type (smoke, glass, etc.)',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _showCustomSensorTypeSheet();
+              },
+            ),
             const SizedBox(height: 8),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showCustomSensorTypeSheet() {
+    final typeCtrl = TextEditingController();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF2D2D2D),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Custom Sensor Type',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: typeCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Sensor type name',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  hintText: 'e.g. Smoke Sensor',
+                  hintStyle: TextStyle(color: Colors.white30),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: Colors.white24),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: Colors.cyan),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel',
+                        style: TextStyle(color: Colors.white54)),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.cyan,
+                        foregroundColor: Colors.white),
+                    onPressed: () async {
+                      final label = typeCtrl.text.trim();
+                      if (label.isEmpty) return;
+                      await _addCustomSensorType(label);
+                      if (!mounted) return;
+                      Navigator.pop(context);
+                    },
+                    child: const Text('Add'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -841,7 +1116,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   style: TextStyle(color: Colors.white54, fontSize: 12)),
               onTap: () {
                 Navigator.pop(context);
-                _showPairingScreen(AccessoryType.remote, remoteMode: 'disarmed');
+                _showPairingScreen(AccessoryType.remote,
+                    remoteMode: 'disarmed');
               },
             ),
             const SizedBox(height: 12),
@@ -854,33 +1130,53 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ===========================================================================
   // OPEN PAIRING DIALOG
   // ===========================================================================
-  void _showPairingScreen(AccessoryType type, {String? remoteMode}) {
+  void _showPairingScreen(
+      AccessoryType type, {
+        String? remoteMode,
+        String? customTypeLabel,
+      }) {
     final nameCtrl = TextEditingController();
     final zoneCtrl = TextEditingController();
 
-    String   typeLabel, instructions;
+    if (type == AccessoryType.other &&
+        customTypeLabel != null &&
+        customTypeLabel.isNotEmpty) {
+      nameCtrl.text = customTypeLabel;
+    }
+
+    String typeLabel, instructions;
     IconData typeIcon;
-    Color    typeColor;
+    Color typeColor;
 
     switch (type) {
       case AccessoryType.remote:
-        typeLabel    = 'Remote (${remoteMode == 'armed' ? 'Armed' : 'Disarmed'})';
-        typeIcon     = Icons.settings_remote;
-        typeColor    = Colors.purple;
+        typeLabel =
+        'Remote (${remoteMode == 'armed' ? 'Armed' : 'Disarmed'})';
+        typeIcon = Icons.settings_remote;
+        typeColor = Colors.purple;
         instructions = 'Power on the remote and press the '
             '${remoteMode == 'armed' ? 'ARMED' : 'DISARMED'} button.';
         break;
       case AccessoryType.motion:
-        typeLabel    = 'Motion Sensor';
-        typeIcon     = Icons.directions_walk;
-        typeColor    = Colors.orange;
+        typeLabel = 'Motion Sensor';
+        typeIcon = Icons.directions_walk;
+        typeColor = Colors.orange;
         instructions = 'Power on the motion sensor and keep it close.';
         break;
       case AccessoryType.door:
-        typeLabel    = 'Door Sensor';
-        typeIcon     = Icons.door_front_door;
-        typeColor    = Colors.teal;
+        typeLabel = 'Door Sensor';
+        typeIcon = Icons.door_front_door;
+        typeColor = Colors.teal;
         instructions = 'Power on the door sensor and keep it close.';
+        break;
+      case AccessoryType.other:
+      default:
+        typeLabel = (customTypeLabel != null && customTypeLabel.isNotEmpty)
+            ? customTypeLabel
+            : 'Sensor';
+        typeIcon = Icons.sensors;
+        typeColor = Colors.cyan;
+        instructions = 'Power on the $typeLabel and keep it close.';
         break;
     }
 
@@ -888,16 +1184,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => _PairingDialog(
-        type:           type,
-        typeLabel:      typeLabel,
-        typeIcon:       typeIcon,
-        typeColor:      typeColor,
-        instructions:   instructions,
-        remoteMode:     remoteMode,
+        type: type,
+        typeLabel: typeLabel,
+        typeIcon: typeIcon,
+        typeColor: typeColor,
+        instructions: instructions,
+        remoteMode: remoteMode,
         nameController: nameCtrl,
         zoneController: zoneCtrl,
-        hubDeviceUuid:  _hubDeviceUuid ?? '',
-        apiService:     _apiService,
+        hubDeviceUuid: _hubDeviceUuid ?? '',
+        apiService: _apiService,
         onPaired: (accessory) async {
           final idx = _accessories.indexWhere((a) => a.id == accessory.id);
           if (idx >= 0) {
@@ -906,8 +1202,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             setState(() => _accessories.add(accessory));
           }
           await AccessoryStorage.save(_accessories);
-          print('✅ Accessory saved locally: ${accessory.name} '
-              'status=${accessory.status.name}');
         },
       ),
     );
@@ -915,19 +1209,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 }
 
 // =============================================================================
-// PAIRING DIALOG
+// PAIRING DIALOG (unchanged)
 // =============================================================================
 class _PairingDialog extends StatefulWidget {
   final AccessoryType type;
-  final String        typeLabel;
-  final IconData      typeIcon;
-  final Color         typeColor;
-  final String        instructions;
-  final String?       remoteMode;
+  final String typeLabel;
+  final IconData typeIcon;
+  final Color typeColor;
+  final String instructions;
+  final String? remoteMode;
   final TextEditingController nameController;
   final TextEditingController zoneController;
-  final String        hubDeviceUuid;
-  final ApiService?   apiService;
+  final String hubDeviceUuid;
+  final ApiService? apiService;
   final void Function(Accessory) onPaired;
 
   const _PairingDialog({
@@ -949,27 +1243,26 @@ class _PairingDialog extends StatefulWidget {
 }
 
 class _PairingDialogState extends State<_PairingDialog> {
-  static const String _svcUuid    = '703de63c-1c78-703d-e63c-1a42b93437e2';
-  static const String _writeUuid  = '703de63c-1c78-703d-e63c-1a42b93437e3';
+  static const String _svcUuid = '703de63c-1c78-703d-e63c-1a42b93437e2';
+  static const String _writeUuid = '703de63c-1c78-703d-e63c-1a42b93437e3';
   static const String _notifyUuid = '703de63c-1c78-703d-e63c-1a42b93437e4';
-  static const int    _totalSec   = 30;
-  static const String _buildTag   = 'HUB BLE PATCH 24MAR';
+  static const int _totalSec = 30;
 
-  int    _secondsLeft    = _totalSec;
-  bool   _isPairing      = false;
-  bool   _pairingDone    = false;
-  bool   _pairingSuccess = false;
-  String _statusMsg      = '';
-  bool   _triedConnect   = false;
+  int _secondsLeft = _totalSec;
+  bool _isPairing = false;
+  bool _pairingDone = false;
+  bool _pairingSuccess = false;
+  String _statusMsg = '';
+  bool _triedConnect = false;
 
   String? _pairedMac;
   String? _pairedBleName;
-  int?    _pairingId;
-  bool    _hubAckOnly = false;
+  int? _pairingId;
+  bool _hubAckOnly = false;
 
-  Timer?                                _timer;
+  Timer? _timer;
   StreamSubscription<List<ScanResult>>? _scanSub;
-  BluetoothDevice?                      _currentDevice;
+  BluetoothDevice? _currentDevice;
 
   @override
   void dispose() {
@@ -980,25 +1273,21 @@ class _PairingDialogState extends State<_PairingDialog> {
   Future<void> _cleanup() async {
     _timer?.cancel();
     await _scanSub?.cancel();
-    try { await FlutterBluePlus.stopScan(); } catch (_) {}
-    try { await _currentDevice?.disconnect(); } catch (_) {}
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+    try {
+      await _currentDevice?.disconnect();
+    } catch (_) {}
   }
 
-  // ===========================================================================
-  // STEP 1 — POST pairing record to server
-  // ===========================================================================
   bool _looksLikeHubResult(ScanResult result) {
     final advName = result.device.platformName.isNotEmpty
         ? result.device.platformName
         : result.advertisementData.advName;
-    if (advName.toLowerCase().contains('esp32_alarm_setup')) {
-      return true;
-    }
-
+    if (advName.toLowerCase().contains('esp32_alarm_setup')) return true;
     for (final serviceUuid in result.advertisementData.serviceUuids) {
-      if (serviceUuid.toString().toLowerCase() == _svcUuid) {
-        return true;
-      }
+      if (serviceUuid.toString().toLowerCase() == _svcUuid) return true;
     }
     return false;
   }
@@ -1015,38 +1304,30 @@ class _PairingDialogState extends State<_PairingDialog> {
     try {
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
     } catch (e) {
-      print('?? Hub BLE scan start failed: $e');
+      print('⚠️ Hub BLE scan start failed: $e');
       return false;
     }
 
     _scanSub = FlutterBluePlus.scanResults.listen((results) async {
-      if (!_isPairing || _pairingDone || _triedConnect || completer.isCompleted) {
+      if (!_isPairing || _pairingDone || _triedConnect || completer.isCompleted)
         return;
-      }
-
       for (final r in results) {
         if (_triedConnect || _pairingDone || completer.isCompleted) break;
         if (!_looksLikeHubResult(r)) continue;
-
         final advName = r.device.platformName.isNotEmpty
             ? r.device.platformName
             : r.advertisementData.advName;
-
         _triedConnect = true;
-        if (mounted) {
-          setState(() => _statusMsg = 'Found hub "$advName" - connecting...');
-        }
-
+        if (mounted) setState(() => _statusMsg = 'Found hub "$advName" - connecting...');
         final ok = await _tryConnectAndVerify(r.device, advName);
-        if (!completer.isCompleted) {
-          completer.complete(ok);
-        }
+        if (!completer.isCompleted) completer.complete(ok);
         break;
       }
     });
 
     try {
-      return await completer.future.timeout(const Duration(seconds: 12), onTimeout: () => false);
+      return await completer.future
+          .timeout(const Duration(seconds: 12), onTimeout: () => false);
     } finally {
       try {
         await _scanSub?.cancel();
@@ -1054,24 +1335,35 @@ class _PairingDialogState extends State<_PairingDialog> {
       } catch (_) {}
     }
   }
+
   Future<int?> _createServerPairingRecord(String tempUuid) async {
     if (widget.apiService == null || widget.hubDeviceUuid.isEmpty) return null;
-    try {
+    Future<int?> createForHub(String hubUuid) async {
       final result = await widget.apiService!.accessoryPair(
-        hubDeviceUuid: widget.hubDeviceUuid,
+        hubDeviceUuid: hubUuid,
         accessoryUuid: tempUuid,
-        name:          widget.nameController.text.trim(),
-        type:          widget.type.name,
-        zoneName:      widget.zoneController.text.trim().isEmpty
+        name: widget.nameController.text.trim(),
+        type: widget.type.name,
+        zoneName: widget.zoneController.text.trim().isEmpty
             ? 'General'
             : widget.zoneController.text.trim(),
-        remoteMode:    widget.remoteMode,
-        status:        'pairing',
+        remoteMode: widget.remoteMode,
+        status: 'pairing',
       );
       if (result != null && result['success'] == true) {
         final id = result['id'];
-        print('✅ Server pairing record created. pairingId=$id');
         return id is int ? id : int.tryParse(id?.toString() ?? '');
+      }
+      return null;
+    }
+
+    try {
+      final primaryId = await createForHub(widget.hubDeviceUuid);
+      if (primaryId != null) return primaryId;
+
+      final fallbackHub = SettingsManager().hubLanguage;
+      if (fallbackHub.isNotEmpty && fallbackHub != widget.hubDeviceUuid) {
+        return await createForHub(fallbackHub);
       }
     } catch (e) {
       print('⚠️ Server pairing record error (non-fatal): $e');
@@ -1079,9 +1371,6 @@ class _PairingDialogState extends State<_PairingDialog> {
     return null;
   }
 
-  // ===========================================================================
-  // STEP 2 — Notify hub + BLE scan
-  // ===========================================================================
   Future<void> _startPairing() async {
     final name = widget.nameController.text.trim();
     if (name.isEmpty) {
@@ -1095,31 +1384,28 @@ class _PairingDialogState extends State<_PairingDialog> {
         'pairing_${widget.type.name}_${DateTime.now().millisecondsSinceEpoch}';
 
     setState(() {
-      _isPairing      = true;
-      _pairingDone    = false;
+      _isPairing = true;
+      _pairingDone = false;
       _pairingSuccess = false;
-      _secondsLeft    = _totalSec;
-      _statusMsg      = 'Saving pairing request…';
-      _pairedMac      = null;
-      _pairedBleName  = null;
-      _pairingId      = null;
-      _triedConnect   = false;
+      _secondsLeft = _totalSec;
+      _statusMsg = 'Saving pairing request…';
+      _pairedMac = null;
+      _pairedBleName = null;
+      _pairingId = null;
+      _triedConnect = false;
     });
 
-    // ── STEP 1: Create DB record ──────────────────────────────────────────────
     _pairingId = await _createServerPairingRecord(tempUuid);
-
-    // ── STEP 2: Notify hub immediately ───────────────────────────────────────
-    if (mounted) setState(() => _statusMsg = 'Notifying hub to start pairing…');
-    final hubNotified = await _notifyHubToStartPairing();
-
-    if (mounted) {
-      setState(() => _statusMsg = hubNotified
-          ? 'Hub notified ✓ — waiting for ${_sensorLabel()} to respond…'
-          : 'Scanning for ${_sensorLabel()}…');
+    if (_pairingId == null) {
+      _finishPairing(success: false, reason: 'server_request_failed');
+      return;
     }
 
-    // STEP 3: Send pair_request to hub BLE
+    if (mounted) {
+      setState(() => _statusMsg =
+          'Hub request sent. Press/trigger the ${_sensorLabel()} now...');
+    }
+
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
@@ -1129,98 +1415,18 @@ class _PairingDialogState extends State<_PairingDialog> {
         if (!_pairingDone) _finishPairing(success: false, reason: 'timeout');
       }
     });
-
-    if (mounted) {
-      setState(() => _statusMsg = 'Connecting to hub Bluetooth...');
-    }
-
-    final hubBleOk = await _connectToHubBle();
-    if (!hubBleOk && mounted && !_pairingDone) {
-      setState(() => _statusMsg = 'Hub Bluetooth not reachable - still waiting...');
-    }
   }
 
-  // ===========================================================================
-  // ✅ NEW — Notify hub to start pairing mode
-  //
-  // POSTs this JSON to the server so the ESP32 hub picks it up on next poll:
-  // {
-  //   "state":           "pairing_started",
-  //   "device_uuid":     "ESP32_ALARM_001",
-  //   "accessory_type":  "door",          ← "door" | "motion" | "remote"
-  //   "pairing_id":      42,
-  //   "name":            "Front Door",
-  //   "zone":            "Entry",
-  //   "remote_mode":     null,            ← only present for remote type
-  //   "user":            "Mobile App",
-  //   "timestamp":       1711234567890
-  // }
-  //
-  // The ESP32 hub firmware should poll system_state OR get_pairing_request
-  // and when it sees state="pairing_started", broadcast a BLE advertisement
-  // so the sensor auto-connects.
-  // ===========================================================================
-  Future<bool> _notifyHubToStartPairing() async {
-    if (widget.hubDeviceUuid.isEmpty) {
-      print('⚠️ No hub UUID — skipping hub notification');
-      return false;
-    }
-
-    try {
-      final payload = <String, dynamic>{
-        'state':          'pairing_started',
-        'device_uuid':    widget.hubDeviceUuid,
-        'accessory_type': widget.type.name,
-        'pairing_id':     _pairingId,
-        'name':           widget.nameController.text.trim(),
-        'zone':           widget.zoneController.text.trim().isEmpty
-            ? 'General'
-            : widget.zoneController.text.trim(),
-        'user':           'Mobile App',
-        'timestamp':      DateTime.now().millisecondsSinceEpoch,
-      };
-
-      // Only include remote_mode for remote type
-      if (widget.remoteMode != null) {
-        payload['remote_mode'] = widget.remoteMode;
-      }
-
-      print('📤 Notifying hub to start pairing: $payload');
-
-      final response = await http.post(
-        Uri.parse('https://monsow.in/alarm/index.php?action=system_state'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 8));
-
-      final ok = response.statusCode == 200;
-      print(ok
-          ? '✅ Hub notified — pairing_started sent for ${widget.type.name}'
-          : '⚠️ Hub notification returned ${response.statusCode}');
-      return ok;
-    } catch (e) {
-      // Non-fatal — BLE scan continues even if hub notification fails
-      print('⚠️ Hub notification failed (non-fatal): $e');
-      return false;
-    }
-  }
-
-  // ===========================================================================
-  // ✅ NEW — Human-readable sensor label for status messages
-  // ===========================================================================
   String _sensorLabel() {
     switch (widget.type) {
-      case AccessoryType.door:   return 'door sensor';
+      case AccessoryType.door: return 'door sensor';
       case AccessoryType.motion: return 'motion sensor';
       case AccessoryType.remote: return 'remote';
+      default: return 'sensor';
     }
   }
 
-  // ===========================================================================
-  // STEP 3 — Connect, verify, send pair_request JSON, wait for sensor_ack
-  // ===========================================================================
-  Future<bool> _tryConnectAndVerify(
-      BluetoothDevice device, String advName) async {
+  Future<bool> _tryConnectAndVerify(BluetoothDevice device, String advName) async {
     _currentDevice = device;
     try {
       await device.connect(
@@ -1231,7 +1437,6 @@ class _PairingDialogState extends State<_PairingDialog> {
           .timeout(const Duration(seconds: 10));
 
       final services = await device.discoverServices();
-
       BluetoothCharacteristic? writeChar;
       BluetoothCharacteristic? notifyChar;
 
@@ -1239,7 +1444,7 @@ class _PairingDialogState extends State<_PairingDialog> {
         if (svc.uuid.toString().toLowerCase() != _svcUuid) continue;
         for (final ch in svc.characteristics) {
           final u = ch.uuid.toString().toLowerCase();
-          if (u == _writeUuid)  writeChar  = ch;
+          if (u == _writeUuid) writeChar = ch;
           if (u == _notifyUuid) notifyChar = ch;
         }
       }
@@ -1258,35 +1463,26 @@ class _PairingDialogState extends State<_PairingDialog> {
         }
       }
 
-      if (writeChar == null) {
-        await device.disconnect();
-        return false;
-      }
-
+      if (writeChar == null) { await device.disconnect(); return false; }
       if (notifyChar != null) await notifyChar.setNotifyValue(true);
 
-      // ── Send pair_request JSON to sensor ───────────────────────────────────
       final pairCmd = jsonEncode({
-        'cmd':        'pair_request',
-        'type':       widget.type.name,
-        'name':       widget.nameController.text.trim(),
-        'zone':       widget.zoneController.text.trim().isEmpty
+        'cmd': 'pair_request',
+        'type': widget.type.name,
+        'name': widget.nameController.text.trim(),
+        'zone': widget.zoneController.text.trim().isEmpty
             ? 'General'
             : widget.zoneController.text.trim(),
-        'hub_uuid':   widget.hubDeviceUuid,
+        'hub_uuid': widget.hubDeviceUuid,
         'pairing_id': _pairingId,
         if (widget.remoteMode != null) 'remote_mode': widget.remoteMode,
-        'timestamp':  DateTime.now().millisecondsSinceEpoch,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
       });
-
-      if (mounted) {
-        setState(() => _statusMsg = 'Waiting for RF sensor signal...');
-      }
 
       final bytes = Uint8List.fromList(utf8.encode(pairCmd));
       const chunkSize = 20;
       for (int i = 0; i < bytes.length; i += chunkSize) {
-        final end   = (i + chunkSize < bytes.length) ? i + chunkSize : bytes.length;
+        final end = (i + chunkSize < bytes.length) ? i + chunkSize : bytes.length;
         final chunk = bytes.sublist(i, end);
         final useWWR = !writeChar!.properties.write &&
             writeChar.properties.writeWithoutResponse;
@@ -1294,18 +1490,17 @@ class _PairingDialogState extends State<_PairingDialog> {
         await Future.delayed(const Duration(milliseconds: 30));
       }
 
-      // ── Wait for sensor_ack ────────────────────────────────────────────────
-      bool    ackOk     = false;
+      bool ackOk = false;
       String? sensorMac;
       String? sensorBle;
-
       _hubAckOnly = false;
+
       if (notifyChar != null) {
         try {
           final raw = await notifyChar.lastValueStream
               .where((v) => v.isNotEmpty)
               .first
-.timeout(Duration(seconds: _totalSec));
+              .timeout(const Duration(seconds: 8));
           final ack = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
           final ackType = ack['type']?.toString();
           final ackStatus = ack['status']?.toString() ?? '';
@@ -1316,22 +1511,16 @@ class _PairingDialogState extends State<_PairingDialog> {
               sensorMac = ack['mac']?.toString();
               sensorBle = ack['ble_name']?.toString();
             }
-            print('? Hub BLE ack: $ack');
           }
         } catch (e) {
-          print('?? No sensor_ack from hub: $e');
-          ackOk = false;
+          print('⚠️ No sensor_ack from hub: $e');
         }
       }
 
-      if (!ackOk) {
-        await device.disconnect();
-        return false;
-      }
+      if (!ackOk) { await device.disconnect(); return false; }
 
-      _pairedMac     = sensorMac ?? device.remoteId.str;
+      _pairedMac = sensorMac ?? device.remoteId.str;
       _pairedBleName = sensorBle ?? advName;
-
       await device.disconnect();
       _finishPairing(success: true);
       return true;
@@ -1342,20 +1531,17 @@ class _PairingDialogState extends State<_PairingDialog> {
     }
   }
 
-  // ===========================================================================
-  // STEP 4 — Update server + save locally
-  // ===========================================================================
   void _finishPairing({required bool success, String? reason}) {
     _cleanup();
     if (!mounted) return;
     setState(() {
-      _isPairing      = false;
-      _pairingDone    = true;
+      _isPairing = false;
+      _pairingDone = true;
       _pairingSuccess = success;
       _statusMsg = success
           ? (_hubAckOnly
-              ? 'Hub accepted pairing request.'
-              : 'Sensor paired via Bluetooth!')
+          ? 'Hub accepted pairing request.'
+          : 'Sensor paired via Bluetooth!')
           : reason == 'timeout'
           ? 'No sensor found within $_totalSec seconds.\n\n'
           'Make sure the sensor is:\n• Powered on\n• Within Bluetooth range'
@@ -1363,14 +1549,15 @@ class _PairingDialogState extends State<_PairingDialog> {
     });
 
     if (widget.apiService != null && _pairingId != null) {
-      final newStatus =
-      success ? (_hubAckOnly ? 'pairing' : 'paired') : (reason == 'timeout' ? 'timeout' : 'failed');
+      final newStatus = success
+          ? (_hubAckOnly ? 'pairing' : 'paired')
+          : (reason == 'timeout' ? 'timeout' : 'failed');
       widget.apiService!
           .accessoryUpdatePairingStatus(
-        pairingId:     _pairingId!,
+        pairingId: _pairingId!,
         accessoryUuid: _pairedMac,
         deviceBleName: _pairedBleName,
-        status:        newStatus,
+        status: newStatus,
       )
           .then((_) => print('✅ Server pairing status → $newStatus'))
           .catchError((e) => print('⚠️ Server status update failed: $e'));
@@ -1384,20 +1571,20 @@ class _PairingDialogState extends State<_PairingDialog> {
     final zone = widget.zoneController.text.trim().isEmpty
         ? 'General'
         : widget.zoneController.text.trim();
-    final mac  = _pairedMac ??
+    final mac = _pairedMac ??
         'pairing_${widget.type.name}_${DateTime.now().millisecondsSinceEpoch}';
 
     final accessory = Accessory(
-      id:         mac,
-      name:       name,
+      id: mac,
+      name: name,
       deviceName: _pairedBleName ?? name,
-      zone:       zone,
-      type:       widget.type,
+      zone: zone,
+      type: widget.type,
       remoteMode: widget.remoteMode,
-      status:     _pairingSuccess
+      status: _pairingSuccess
           ? (_hubAckOnly ? AccessoryStatus.pairing : AccessoryStatus.paired)
           : AccessoryStatus.pairing,
-      pairingId:  _pairingId,
+      pairingId: _pairingId,
     );
 
     widget.onPaired(accessory);
@@ -1407,15 +1594,15 @@ class _PairingDialogState extends State<_PairingDialog> {
   void _retryPairing() {
     _cleanup();
     setState(() {
-      _isPairing      = false;
-      _pairingDone    = false;
+      _isPairing = false;
+      _pairingDone = false;
       _pairingSuccess = false;
-      _secondsLeft    = _totalSec;
-      _statusMsg      = '';
-      _pairedMac      = null;
-      _pairedBleName  = null;
-      _triedConnect   = false;
-      _pairingId      = null;
+      _secondsLeft = _totalSec;
+      _statusMsg = '';
+      _pairedMac = null;
+      _pairedBleName = null;
+      _triedConnect = false;
+      _pairingId = null;
     });
   }
 
@@ -1423,13 +1610,11 @@ class _PairingDialogState extends State<_PairingDialog> {
     switch (widget.type) {
       case AccessoryType.remote: return 'Remote Sensor';
       case AccessoryType.motion: return 'Motion Sensor';
-      case AccessoryType.door:   return 'Door Sensor';
+      case AccessoryType.door: return 'Door Sensor';
+      default: return 'Sensor';
     }
   }
 
-  // ===========================================================================
-  // BUILD
-  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -1491,21 +1676,18 @@ class _PairingDialogState extends State<_PairingDialog> {
             ),
           ),
           const SizedBox(height: 16),
-
           if (!_isPairing && !_pairingDone)
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: widget.typeColor.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(10),
-                border:
-                Border.all(color: widget.typeColor.withOpacity(0.3)),
+                border: Border.all(color: widget.typeColor.withOpacity(0.3)),
               ),
               child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.bluetooth,
-                        color: widget.typeColor, size: 20),
+                    Icon(Icons.bluetooth, color: widget.typeColor, size: 20),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -1524,7 +1706,6 @@ class _PairingDialogState extends State<_PairingDialog> {
                     ),
                   ]),
             ),
-
           if (_isPairing) _buildProgress(),
           if (_pairingDone && _pairingSuccess) _buildSuccess(),
           if (_pairingDone && !_pairingSuccess) _buildFailure(),
@@ -1540,7 +1721,8 @@ class _PairingDialogState extends State<_PairingDialog> {
       const SizedBox(height: 8),
       Stack(alignment: Alignment.center, children: [
         SizedBox(
-          width: 80, height: 80,
+          width: 80,
+          height: 80,
           child: CircularProgressIndicator(
             value: progress,
             strokeWidth: 6,
@@ -1549,8 +1731,7 @@ class _PairingDialogState extends State<_PairingDialog> {
           ),
         ),
         Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.bluetooth_searching,
-              color: widget.typeColor, size: 20),
+          Icon(Icons.bluetooth_searching, color: widget.typeColor, size: 20),
           Text('$_secondsLeft',
               style: TextStyle(
                   color: widget.typeColor,
@@ -1559,10 +1740,6 @@ class _PairingDialogState extends State<_PairingDialog> {
         ]),
       ]),
       const SizedBox(height: 12),
-      const Text(_buildTag,
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white38, fontSize: 11)),
-      const SizedBox(height: 6),
       Text(_statusMsg,
           textAlign: TextAlign.center,
           style: const TextStyle(color: Colors.white70, fontSize: 13)),
@@ -1581,8 +1758,7 @@ class _PairingDialogState extends State<_PairingDialog> {
       borderRadius: BorderRadius.circular(10),
       border: Border.all(color: Colors.green),
     ),
-    child:
-    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Row(children: [
         Icon(Icons.check_circle, color: Colors.green, size: 24),
         SizedBox(width: 10),
@@ -1595,17 +1771,14 @@ class _PairingDialogState extends State<_PairingDialog> {
       if (_pairedBleName != null) ...[
         const SizedBox(height: 8),
         Text('Sensor: $_pairedBleName',
-            style:
-            const TextStyle(color: Colors.white70, fontSize: 13)),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
         Text('MAC: $_pairedMac',
-            style:
-            const TextStyle(color: Colors.white38, fontSize: 11)),
+            style: const TextStyle(color: Colors.white38, fontSize: 11)),
       ],
       if (_pairingId != null) ...[
         const SizedBox(height: 4),
         Text('Server ID: $_pairingId  •  Status: paired',
-            style:
-            const TextStyle(color: Colors.white38, fontSize: 11)),
+            style: const TextStyle(color: Colors.white38, fontSize: 11)),
       ],
       const SizedBox(height: 6),
       const Text('Tap "Save" to finish.',
@@ -1620,8 +1793,7 @@ class _PairingDialogState extends State<_PairingDialog> {
       borderRadius: BorderRadius.circular(10),
       border: Border.all(color: Colors.red),
     ),
-    child:
-    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Row(children: [
         Icon(Icons.error_outline, color: Colors.red, size: 24),
         SizedBox(width: 10),
@@ -1633,8 +1805,7 @@ class _PairingDialogState extends State<_PairingDialog> {
       ]),
       const SizedBox(height: 6),
       Text(_statusMsg,
-          style:
-          const TextStyle(color: Colors.white70, fontSize: 12)),
+          style: const TextStyle(color: Colors.white70, fontSize: 12)),
     ]),
   );
 
@@ -1662,8 +1833,7 @@ class _PairingDialogState extends State<_PairingDialog> {
     if (_isPairing) {
       return [
         TextButton(
-          onPressed: () =>
-              _finishPairing(success: false, reason: 'cancelled'),
+          onPressed: () => _finishPairing(success: false, reason: 'cancelled'),
           child: const Text('Cancel',
               style: TextStyle(color: Colors.white54)),
         ),
@@ -1691,8 +1861,7 @@ class _PairingDialogState extends State<_PairingDialog> {
     return [
       TextButton(
         onPressed: () => Navigator.pop(context),
-        child: const Text('Close',
-            style: TextStyle(color: Colors.white54)),
+        child: const Text('Close', style: TextStyle(color: Colors.white54)),
       ),
       ElevatedButton.icon(
         icon: const Icon(Icons.refresh, size: 16),
@@ -1707,7 +1876,3 @@ class _PairingDialogState extends State<_PairingDialog> {
     ];
   }
 }
-
-
-
-

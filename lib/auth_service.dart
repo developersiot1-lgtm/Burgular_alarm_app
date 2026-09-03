@@ -12,8 +12,8 @@ class AuthService {
   static const String _baseUrl = 'https://monsow.in/alarm/auth.php';
 
   // SharedPrefs keys
-  static const String _keyUserId    = 'auth_user_id';
-  static const String _keyUserName  = 'auth_user_name';
+  static const String _keyUserId = 'auth_user_id';
+  static const String _keyUserName = 'auth_user_name';
   static const String _keyUserEmail = 'auth_user_email';
 
   // ── Singleton ────────────────────────────────────────────────
@@ -31,36 +31,37 @@ class AuthService {
     try {
       return jsonDecode(body) as Map<String, dynamic>;
     } catch (e) {
-      print('⚠️ Bad JSON from server: ${body.substring(0, body.length.clamp(0, 200))}');
+      print(
+          '⚠️ Bad JSON from server: ${body.substring(0, body.length.clamp(0, 200))}');
       return null;
     }
   }
 
   // ── Cached current user ──────────────────────────────────────
-  int?    _userId;
+  int? _userId;
   String? _userName;
   String? _userEmail;
 
-  int?    get userId    => _userId;
-  String? get userName  => _userName;
+  int? get userId => _userId;
+  String? get userName => _userName;
   String? get userEmail => _userEmail;
-  bool    get isLoggedIn => _userId != null && _userId! > 0;
+  bool get isLoggedIn => _userId != null && _userId! > 0;
 
   // ── Load saved session on app start ─────────────────────────
   Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
-    _userId    = prefs.getInt(_keyUserId);
-    _userName  = prefs.getString(_keyUserName);
+    _userId = prefs.getInt(_keyUserId);
+    _userName = prefs.getString(_keyUserName);
     _userEmail = prefs.getString(_keyUserEmail);
   }
 
   Future<void> _saveSession(int userId, String name, String email) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_keyUserId,       userId);
-    await prefs.setString(_keyUserName,  name);
+    await prefs.setInt(_keyUserId, userId);
+    await prefs.setString(_keyUserName, name);
     await prefs.setString(_keyUserEmail, email);
-    _userId    = userId;
-    _userName  = name;
+    _userId = userId;
+    _userName = name;
     _userEmail = email;
   }
 
@@ -69,8 +70,8 @@ class AuthService {
     await prefs.remove(_keyUserId);
     await prefs.remove(_keyUserName);
     await prefs.remove(_keyUserEmail);
-    _userId    = null;
-    _userName  = null;
+    _userId = null;
+    _userName = null;
     _userEmail = null;
   }
 
@@ -81,14 +82,19 @@ class AuthService {
     required String password,
   }) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'name': name, 'email': email, 'password': password}),
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=register'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(
+                {'name': name, 'email': email, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       final data = _safeJson(res);
-      if (data == null) return AuthResult.failure('Server returned invalid response. Check server logs.');
+      if (data == null)
+        return AuthResult.failure(
+            'Server returned invalid response. Check server logs.');
       if (data['success'] == true) {
         await _saveSession(data['user_id'], data['name'], data['email']);
         return AuthResult.success(data['message'] ?? 'Registered');
@@ -105,14 +111,18 @@ class AuthService {
     required String password,
   }) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=login'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'password': password}),
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=login'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       final data = _safeJson(res);
-      if (data == null) return AuthResult.failure('Server returned invalid response. Check server logs.');
+      if (data == null)
+        return AuthResult.failure(
+            'Server returned invalid response. Check server logs.');
       if (data['success'] == true) {
         await _saveSession(data['user_id'], data['name'], data['email']);
         return AuthResult.success(data['message'] ?? 'Login successful');
@@ -126,14 +136,17 @@ class AuthService {
   // ── FORGOT PASSWORD — send OTP ───────────────────────────────
   Future<AuthResult> forgotPassword(String email) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=forgot_password'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email}),
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=forgot_password'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       final data = _safeJson(res);
-      if (data == null) return AuthResult.failure('Server returned invalid response.');
+      if (data == null)
+        return AuthResult.failure('Server returned invalid response.');
       return data['success'] == true
           ? AuthResult.success(data['message'] ?? 'OTP sent')
           : AuthResult.failure(data['message'] ?? 'Failed');
@@ -145,14 +158,17 @@ class AuthService {
   // ── VERIFY OTP ───────────────────────────────────────────────
   Future<AuthResult> verifyOtp(String email, String otp) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=verify_otp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'otp': otp}),
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=verify_otp'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email, 'otp': otp}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       final data = _safeJson(res);
-      if (data == null) return AuthResult.failure('Server returned invalid response.');
+      if (data == null)
+        return AuthResult.failure('Server returned invalid response.');
       return data['success'] == true
           ? AuthResult.success(data['message'] ?? 'Verified')
           : AuthResult.failure(data['message'] ?? 'Invalid code');
@@ -168,14 +184,18 @@ class AuthService {
     required String newPassword,
   }) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=reset_password'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'otp': otp, 'new_password': newPassword}),
-      ).timeout(const Duration(seconds: 15));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=reset_password'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(
+                {'email': email, 'otp': otp, 'new_password': newPassword}),
+          )
+          .timeout(const Duration(seconds: 15));
 
       final data = _safeJson(res);
-      if (data == null) return AuthResult.failure('Server returned invalid response.');
+      if (data == null)
+        return AuthResult.failure('Server returned invalid response.');
       return data['success'] == true
           ? AuthResult.success(data['message'] ?? 'Password reset')
           : AuthResult.failure(data['message'] ?? 'Failed');
@@ -188,11 +208,17 @@ class AuthService {
   Future<bool> addUserDevice(String deviceUuid) async {
     if (_userId == null) return false;
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=add_user_device'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'user_id': _userId, 'device_uuid': deviceUuid}),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=add_user_device'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'user_id': _userId,
+              'device_uuid': deviceUuid,
+              'role': 'admin',
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
 
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       return data['success'] == true;
@@ -205,9 +231,11 @@ class AuthService {
   Future<List<Map<String, dynamic>>> getUserDevices() async {
     if (_userId == null) return [];
     try {
-      final res = await http.get(
-        Uri.parse('$_baseUrl?action=get_user_devices&user_id=$_userId'),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .get(
+            Uri.parse('$_baseUrl?action=get_user_devices&user_id=$_userId'),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -219,15 +247,53 @@ class AuthService {
     }
   }
 
+  Future<ShareResult> shareDevice({
+    required String targetEmail,
+    required String deviceUuid,
+    required String role,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl?action=share_device'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'owner_id': _userId, // your logged-in user_id
+          'email': targetEmail,
+          'device_uuid': deviceUuid,
+          'role': role == 'admin' ? 'admin' : 'user',
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+
+      return ShareResult(
+        success: data['success'] ?? false,
+        message: data['message'] ?? 'Unknown error',
+        userId: data['user_id'],
+        tempPassword: data['temp_password'],
+        loginInfo: data['login_info'],
+      );
+    } catch (e) {
+      return ShareResult(
+        success: false,
+        message: 'Network error: $e',
+      );
+    }
+  }
+
+// Result class
+
   // ── REMOVE DEVICE FROM USER ──────────────────────────────────
   Future<bool> removeUserDevice(String deviceUuid) async {
     if (_userId == null) return false;
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=remove_user_device'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'user_id': _userId, 'device_uuid': deviceUuid}),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=remove_user_device'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'user_id': _userId, 'device_uuid': deviceUuid}),
+          )
+          .timeout(const Duration(seconds: 10));
 
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       return data['success'] == true;
@@ -242,6 +308,24 @@ class AuthResult {
   final bool success;
   final String message;
   AuthResult._({required this.success, required this.message});
-  factory AuthResult.success(String msg) => AuthResult._(success: true,  message: msg);
-  factory AuthResult.failure(String msg) => AuthResult._(success: false, message: msg);
+  factory AuthResult.success(String msg) =>
+      AuthResult._(success: true, message: msg);
+  factory AuthResult.failure(String msg) =>
+      AuthResult._(success: false, message: msg);
+}
+
+class ShareResult {
+  final bool success;
+  final String message;
+  final int? userId;
+  final String? tempPassword;
+  final String? loginInfo;
+
+  ShareResult({
+    required this.success,
+    required this.message,
+    this.userId,
+    this.tempPassword,
+    this.loginInfo,
+  });
 }

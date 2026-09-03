@@ -12,6 +12,7 @@ import 'splash_screen.dart';
 import 'api_service.dart';
 import 'settings_manager.dart';
 import 'device_registry_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STEP 1 – Bluetooth Device Picker
@@ -168,7 +169,7 @@ class _BluetoothDevicePickerScreenState
       if (writeChar == null) {
         throw Exception(
           'No writable characteristic found on device.\n'
-              'Make sure ESP32 firmware is running correctly.',
+          'Make sure ESP32 firmware is running correctly.',
         );
       }
 
@@ -203,10 +204,10 @@ class _BluetoothDevicePickerScreenState
         String errorMsg = 'Connection failed: $e';
         if (e.toString().contains('Timed out')) {
           errorMsg =
-          'Connection timeout. Make sure device is powered on and close by.';
+              'Connection timeout. Make sure device is powered on and close by.';
         } else if (e.toString().contains('133')) {
           errorMsg =
-          'Connection error (133). Restart Bluetooth on your phone and retry.';
+              'Connection error (133). Restart Bluetooth on your phone and retry.';
         }
 
         ScaffoldMessenger.of(context).showSnackBar(
@@ -262,7 +263,7 @@ class _BluetoothDevicePickerScreenState
 
   Future<bool?> _showPairDialog(BluetoothDevice device) {
     final displayName =
-    device.platformName.isNotEmpty ? device.platformName : 'Unknown Device';
+        device.platformName.isNotEmpty ? device.platformName : 'Unknown Device';
     return showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -335,12 +336,11 @@ class _BluetoothDevicePickerScreenState
                     children: [
                       const Text('QR Code scanned ✓',
                           style: TextStyle(
-                              color: Colors.blue,
-                              fontWeight: FontWeight.bold)),
+                              color: Colors.blue, fontWeight: FontWeight.bold)),
                       Text(
                         widget.scannedQRCode,
                         style:
-                        const TextStyle(color: Colors.amber, fontSize: 11),
+                            const TextStyle(color: Colors.amber, fontSize: 11),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -373,117 +373,116 @@ class _BluetoothDevicePickerScreenState
           Expanded(
             child: devices.isEmpty
                 ? Center(
-              child: _isScanning
-                  ? const Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Scanning for nearby Bluetooth devices…'),
-                  SizedBox(height: 8),
-                  Text(
-                    'Keep your alarm device powered on and close by.',
-                    style: TextStyle(color: Colors.grey),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              )
-                  : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.bluetooth_disabled,
-                      size: 64, color: Colors.grey),
-                  const SizedBox(height: 16),
-                  const Text('No Bluetooth devices found',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Make sure Bluetooth is ON and\nyour device is within range.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton.icon(
-                    onPressed: _startScan,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Scan Again'),
-                  ),
-                ],
-              ),
-            )
+                    child: _isScanning
+                        ? const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(height: 16),
+                              Text('Scanning for nearby Bluetooth devices…'),
+                              SizedBox(height: 8),
+                              Text(
+                                'Keep your alarm device powered on and close by.',
+                                style: TextStyle(color: Colors.grey),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          )
+                        : Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.bluetooth_disabled,
+                                  size: 64, color: Colors.grey),
+                              const SizedBox(height: 16),
+                              const Text('No Bluetooth devices found',
+                                  style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'Make sure Bluetooth is ON and\nyour device is within range.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                              const SizedBox(height: 20),
+                              ElevatedButton.icon(
+                                onPressed: _startScan,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Scan Again'),
+                              ),
+                            ],
+                          ),
+                  )
                 : ListView.separated(
-              padding: const EdgeInsets.all(8),
-              itemCount: devices.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final result = devices[index];
-                final device = result.device;
-                final name = device.platformName.isNotEmpty
-                    ? device.platformName
-                    : (result.advertisementData.advName.isNotEmpty
-                    ? result.advertisementData.advName
-                    : 'Unknown Device');
-                final rssi = result.rssi;
-                final isConnected =
-                    _connectedDevice?.remoteId == device.remoteId;
+                    padding: const EdgeInsets.all(8),
+                    itemCount: devices.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final result = devices[index];
+                      final device = result.device;
+                      final name = device.platformName.isNotEmpty
+                          ? device.platformName
+                          : (result.advertisementData.advName.isNotEmpty
+                              ? result.advertisementData.advName
+                              : 'Unknown Device');
+                      final rssi = result.rssi;
+                      final isConnected =
+                          _connectedDevice?.remoteId == device.remoteId;
 
-                return Card(
-                  color:
-                  isConnected ? Colors.green.withOpacity(0.1) : null,
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: isConnected
-                          ? Colors.green.withOpacity(0.2)
-                          : Colors.blue.withOpacity(0.15),
-                      child: Icon(
-                        isConnected
-                            ? Icons.bluetooth_connected
-                            : Icons.bluetooth,
+                      return Card(
                         color:
-                        isConnected ? Colors.green : Colors.blue,
-                      ),
-                    ),
-                    title: Text(name,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold)),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          device.remoteId.str,
-                          style: const TextStyle(
-                              fontSize: 11, color: Colors.grey),
+                            isConnected ? Colors.green.withOpacity(0.1) : null,
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: isConnected
+                                ? Colors.green.withOpacity(0.2)
+                                : Colors.blue.withOpacity(0.15),
+                            child: Icon(
+                              isConnected
+                                  ? Icons.bluetooth_connected
+                                  : Icons.bluetooth,
+                              color: isConnected ? Colors.green : Colors.blue,
+                            ),
+                          ),
+                          title: Text(name,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                device.remoteId.str,
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.grey),
+                              ),
+                              Row(
+                                children: [
+                                  Icon(_rssiIcon(rssi),
+                                      size: 14, color: _rssiColor(rssi)),
+                                  const SizedBox(width: 4),
+                                  Text('$rssi dBm',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: _rssiColor(rssi))),
+                                ],
+                              ),
+                            ],
+                          ),
+                          trailing: _isConnecting
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.arrow_forward_ios, size: 16),
+                          onTap: _isConnecting
+                              ? null
+                              : () => _onDeviceTapped(device),
                         ),
-                        Row(
-                          children: [
-                            Icon(_rssiIcon(rssi),
-                                size: 14, color: _rssiColor(rssi)),
-                            const SizedBox(width: 4),
-                            Text('$rssi dBm',
-                                style: TextStyle(
-                                    fontSize: 11,
-                                    color: _rssiColor(rssi))),
-                          ],
-                        ),
-                      ],
-                    ),
-                    trailing: _isConnecting
-                        ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2),
-                    )
-                        : const Icon(Icons.arrow_forward_ios, size: 16),
-                    onTap: _isConnecting
-                        ? null
-                        : () => _onDeviceTapped(device),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
@@ -555,24 +554,24 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
   void _monitorBleConnection() {
     _connectionStateSub =
         widget.bluetoothDevice.connectionState.listen((state) {
-          final connected = state == BluetoothConnectionState.connected;
-          if (mounted && connected != _bleConnected) {
-            setState(() => _bleConnected = connected);
-            // ✅ FIX: Only show warning if setup has NOT completed yet.
-            // After success we intentionally call disconnect() which would
-            // otherwise trigger this false "Bluetooth disconnected" warning.
-            if (!connected && !_setupComplete) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                      '⚠️ Bluetooth disconnected! Tap Retry or go back to reconnect.'),
-                  backgroundColor: Colors.orange,
-                  duration: Duration(seconds: 5),
-                ),
-              );
-            }
-          }
-        });
+      final connected = state == BluetoothConnectionState.connected;
+      if (mounted && connected != _bleConnected) {
+        setState(() => _bleConnected = connected);
+        // ✅ FIX: Only show warning if setup has NOT completed yet.
+        // After success we intentionally call disconnect() which would
+        // otherwise trigger this false "Bluetooth disconnected" warning.
+        if (!connected && !_setupComplete) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  '⚠️ Bluetooth disconnected! Tap Retry or go back to reconnect.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+      }
+    });
   }
 
   /// ✅ FIX: Reconnect + re-discover services if BLE dropped
@@ -633,6 +632,12 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
     }
   }
 
+
+  String _normalizeWifiPassword(String value) {
+    final trimmed = value.trim();
+    return trimmed.replaceAll(r'\@', '@');
+  }
+
   Future<void> _connectAndFinish() async {
     if (_selectedSSID == null || _selectedSSID!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -644,7 +649,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
       return;
     }
 
-    final password = _passwordController.text;
+    final password = _normalizeWifiPassword(_passwordController.text);
     if (password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -666,13 +671,43 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
         );
       }
 
-      // ✅ FIX: Use the pre-discovered writeCharacteristic — NO discoverServices() here
+      // BLE send is the critical path — failure here aborts setup.
       await _sendCredentialsViaBLE(_selectedSSID!, password);
+      _setupComplete = true;
 
-      await _saveCredentialsToServer(
-          widget.bluetoothDevice.remoteId.str, _selectedSSID!, password);
+      final bleMac = widget.bluetoothDevice.remoteId.str;
+      final deviceName = widget.bluetoothDevice.platformName.isNotEmpty
+          ? widget.bluetoothDevice.platformName
+          : 'Alarm Device';
+      final settings = Provider.of<SettingsManager>(context, listen: false);
+      await _saveDeviceLocally(deviceUuid: bleMac, deviceName: deviceName);
+      await settings.setConnectedDeviceUuid(bleMac);
+      await settings.setDeviceName(deviceName);
+      await settings.setCurrentDeviceRole('admin');
 
-      await _registerAlarmDevice();
+      // Server calls are best-effort: "Connection refused" means the phone
+      // is still on the ESP32 provisioning AP or there is a momentary outage.
+      // We retry internally; if all retries fail we warn but do NOT crash —
+      // the ESP32 already has the credentials and will connect to WiFi anyway.
+      try {
+        await _saveCredentialsToServer(_selectedSSID!, password);
+      } catch (e) {
+        print('⚠️ save_wifi_credentials failed (non-fatal): $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                '⚠️ Could not save credentials to server — device will still connect.'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 4),
+          ));
+        }
+      }
+
+      try {
+        await _registerAlarmDevice();
+      } catch (e) {
+        print('⚠️ device registration failed (non-fatal): $e');
+      }
 
       // ✅ FIX: Mark setup as complete BEFORE disconnecting so the
       // connection monitor doesn't show a false "disconnected" warning
@@ -695,7 +730,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => FavoritesScreen()),
-            (_) => false,
+        (_) => false,
       );
     } catch (e) {
       print('❌ Setup failed: $e');
@@ -713,85 +748,97 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
     }
   }
 
-  /// ✅ FIX: Uses widget.writeCharacteristic directly
-  /// The old version called discoverServices() here — that caused fbp-code: 6
+  /// Sends Wi-Fi credentials to ESP32 over BLE using safe 20-byte chunks.
+  /// Do not probe by writing partial JSON; ESP32 treats every write as data.
   Future<void> _sendCredentialsViaBLE(String ssid, String password) async {
-    print('📤 Sending WiFi credentials via BLE...');
+    print('Sending WiFi credentials via BLE...');
 
     final writeChar = widget.writeCharacteristic;
-    print('✅ Using pre-discovered char: ${writeChar.uuid}');
-
-    // Request larger MTU
-    try {
-      final mtu = await widget.bluetoothDevice.requestMtu(512);
-      print('✅ MTU negotiated: $mtu bytes');
-    } catch (e) {
-      print('⚠️ MTU request failed (using default): $e');
-    }
-
     final payload = jsonEncode({
       'cmd': 'wifi_config',
-      'ssid': ssid,
-      'password': password,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'ssid': ssid.trim(),
+      'password': _normalizeWifiPassword(password),
     });
-
-    print('📦 Payload (${payload.length} chars)');
-
     final bytes = utf8.encode(payload);
-
-    // Get current MTU for safe chunk size
-    int mtuSize = 23;
-    try {
-      mtuSize = await widget.bluetoothDevice.mtu.first;
-    } catch (_) {}
-    final chunkSize = mtuSize - 3; // Subtract 3 bytes for ATT overhead
-
-    print('📦 Chunk size: $chunkSize, Total bytes: ${bytes.length}');
-
+    const chunkSize = 20;
     final totalChunks = (bytes.length / chunkSize).ceil();
 
-    for (int i = 0; i < bytes.length; i += chunkSize) {
-      final end =
-      (i + chunkSize < bytes.length) ? i + chunkSize : bytes.length;
-      final chunk = bytes.sublist(i, end);
-      final chunkNum = (i / chunkSize).floor() + 1;
-
-      print('📤 Chunk $chunkNum/$totalChunks (${chunk.length} bytes)...');
-
-      try {
-        await writeChar.write(
-          chunk,
-          withoutResponse: writeChar.properties.writeWithoutResponse &&
-              !writeChar.properties.write,
-        );
-        await Future.delayed(const Duration(milliseconds: 100));
-      } catch (e) {
-        print('❌ Write failed on chunk $chunkNum: $e');
-        throw Exception(
-            'Failed to send credentials (chunk $chunkNum/$totalChunks): $e');
-      }
+    print('BLE payload ${bytes.length} bytes: $payload');
+    for (int offset = 0; offset < bytes.length; offset += chunkSize) {
+      final end = (offset + chunkSize > bytes.length) ? bytes.length : offset + chunkSize;
+      final chunk = bytes.sublist(offset, end);
+      final chunkNumber = (offset / chunkSize).floor() + 1;
+      print('Sending BLE chunk $chunkNumber/$totalChunks (${chunk.length} bytes)');
+      await writeChar.write(chunk, withoutResponse: false).timeout(
+            const Duration(seconds: 8),
+            onTimeout: () => throw TimeoutException(
+              'BLE write timed out on chunk $chunkNumber/$totalChunks',
+            ),
+          );
+      await Future.delayed(const Duration(milliseconds: 120));
     }
 
-    print('✅ All $totalChunks chunks sent!');
+    print('WiFi credentials sent to ESP32');
     await Future.delayed(const Duration(seconds: 2));
-    print('✅ WiFi config complete!');
+  }
+  /// ✅ FIX: Uses widget.scannedQRCode as the canonical device UUID
+  /// (not the BLE MAC address, which the server doesn't recognise)
+  /// ✅ FIX: Timeout increased from 10s → 20s for slow networks
+  // ── Shared HTTP helper: retry up to [maxAttempts] on connection errors ──
+  // "Co
+  // nnection refused / SocketException" almost always means either:
+  //   (a) the phone is still on the ESP32 provisioning AP (no internet), or
+  //   (b) a momentary server blip.
+  // We wait 2 s between attempts to give the OS time to switch networks.
+  Future<http.Response> _postWithRetry(
+    String url,
+    Map<String, dynamic> body, {
+    int maxAttempts = 3,
+    Duration retryDelay = const Duration(seconds: 2),
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    Object? lastError;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        final response = await http
+            .post(
+              Uri.parse(url),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode(body),
+            )
+            .timeout(timeout);
+        return response;
+      } catch (e) {
+        lastError = e;
+        final isConnRefused = e.toString().contains('Connection refused') ||
+            e.toString().contains('SocketException') ||
+            e.toString().contains('ClientException');
+        print('⚠️ HTTP attempt $attempt/$maxAttempts failed: $e');
+        if (attempt < maxAttempts && isConnRefused) {
+          print('⏳ Retrying in ${retryDelay.inSeconds}s '
+              '(phone may still be on provisioning AP)...');
+          await Future.delayed(retryDelay);
+        } else {
+          break;
+        }
+      }
+    }
+    throw Exception(
+        'Server unreachable after $maxAttempts attempts: $lastError');
   }
 
-  Future<void> _saveCredentialsToServer(
-      String deviceUuid, String ssid, String password) async {
-    final response = await http
-        .post(
-      Uri.parse(
-          'https://monsow.in/alarm/index.php?action=save_wifi_credentials'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'device_uuid': deviceUuid,
+  Future<void> _saveCredentialsToServer(String ssid, String password) async {
+    final bleMac = widget.bluetoothDevice.remoteId.str;
+
+    final response = await _postWithRetry(
+      'https://monsow.in/alarm/index.php?action=save_wifi_credentials',
+      {
+        'device_uuid': bleMac,
+        'ble_mac': bleMac,
         'ssid': ssid,
         'password': password,
-      }),
-    )
-        .timeout(const Duration(seconds: 10));
+      },
+    );
 
     if (response.statusCode != 200) {
       throw Exception('Server error ${response.statusCode}: ${response.body}');
@@ -804,43 +851,114 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
     }
   }
 
+  // ── Shared key used by both this screen and FavoritesScreen ────
+  static const String _kPendingDevices = 'pending_local_devices';
+
+  /// Save device to SharedPreferences immediately after BLE succeeds,
+  /// so FavoritesScreen can show it even if the server is unreachable.
+  /// The server sync is retried in the background; once it succeeds the
+  /// device moves from "pending" to the server-authoritative list and
+  /// the local entry is cleaned up.
+  static Future<void> _saveDeviceLocally({
+    required String deviceUuid,
+    required String deviceName,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kPendingDevices) ?? '[]';
+    final list = List<Map<String, dynamic>>.from(
+      (jsonDecode(raw) as List).map((e) => Map<String, dynamic>.from(e as Map)),
+    );
+    // Upsert by uuid
+    list.removeWhere((d) => d['device_uuid'] == deviceUuid);
+    list.add({
+      'device_uuid': deviceUuid,
+      'device_name': deviceName,
+      'added_at': DateTime.now().toIso8601String(),
+    });
+    await prefs.setString(_kPendingDevices, jsonEncode(list));
+    print('💾 Device saved locally: $deviceUuid');
+  }
+
+  /// Remove a device from the local pending list once the server confirmed it.
+  static Future<void> _removeDeviceLocally(String deviceUuid) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kPendingDevices) ?? '[]';
+    final list = List<Map<String, dynamic>>.from(
+      (jsonDecode(raw) as List).map((e) => Map<String, dynamic>.from(e as Map)),
+    );
+    list.removeWhere((d) => d['device_uuid'] == deviceUuid);
+    await prefs.setString(_kPendingDevices, jsonEncode(list));
+  }
+
   Future<void> _registerAlarmDevice() async {
-    final deviceUuid = widget.bluetoothDevice.remoteId.str;
+    final bleMac = widget.bluetoothDevice.remoteId.str;
     final deviceName = widget.bluetoothDevice.platformName.isNotEmpty
         ? widget.bluetoothDevice.platformName
         : 'Alarm Device';
+    final settings = Provider.of<SettingsManager>(context, listen: false);
 
-    final apiService = Provider.of<ApiService>(context, listen: false);
+    // ── Step 1: Always save locally FIRST ────────────────────────
+    // This guarantees FavoritesScreen shows the device even when the
+    // server is down.  The pending entry is cleaned up once the server
+    // call succeeds (see _syncPendingDevicesToServer in FavoritesScreen).
+    await _saveDeviceLocally(deviceUuid: bleMac, deviceName: deviceName);
+    await settings.setConnectedDeviceUuid(bleMac);
+    await settings.setDeviceName(deviceName);
+    await settings.setCurrentDeviceRole('admin');
 
-    // ── Step 1: Register the device in device_registry ────────────────────────
-    final result = await apiService.deviceRegister(
-      deviceUuid: deviceUuid,
-      deviceName: deviceName,
-      deviceType: 'alarm',
-      connectionType: 'wifi_ble',
-      qrData: widget.scannedQRCode,
-      bleServiceUuid: deviceUuid,
+    // ── Step 2: Best-effort server registration (retried in bg) ──
+    // Throws on total failure so the caller can log it, but the local
+    // save above already ensures the device appears in Favorites.
+    final response = await _postWithRetry(
+      'https://monsow.in/alarm/index.php?action=device_register',
+      {
+        'device_uuid': bleMac,
+        'device_name': deviceName,
+        'device_type': 'alarm',
+        'connection_type': 'wifi',
+        'ble_service_uuid': bleMac,
+      },
     );
 
-    if (result == null || result['success'] != true) {
-      throw Exception('Device registration failed. Please try again.');
+    final result = jsonDecode(response.body);
+    if (result['success'] != true) {
+      throw Exception('Server registration failed: ${result['error']}');
+      //throw Exception('Server registration failed: \${result['error']}');
     }
 
-    // ── Step 2: Link device to the logged-in user ─────────────────────────────
-    // This is what makes it appear in FavoritesScreen via getUserDevices()
-    final linked = await AuthService().addUserDevice(deviceUuid);
-    if (!linked) {
-      // Non-fatal: device is registered but not linked to user account.
-      // This can happen if the user is not logged in or server is slow.
-      print('⚠️ Device registered but could not be linked to user account. '
-          'It may not appear in Favourites until re-linked.');
+    // ── Step 3: Link to user account ─────────────────────────────
+    final linked = await AuthService().addUserDevice(bleMac);
+    if (linked) {
+      // Server confirmed — remove from local pending list
+      await _removeDeviceLocally(bleMac);
+    } else {
+      print(
+          '⚠️ Could not link device to user — will retry from FavoritesScreen');
     }
 
-    // ── Step 3: Save UUID locally so HomeScreen can use it ────────────────────
-    final settings = Provider.of<SettingsManager>(context, listen: false);
-    await settings.setConnectedDeviceUuid(deviceUuid);
-    await settings.setDeviceName(deviceName);
+    // ── Step 4: Poll for ESP32 WiFi UUID in background ───────────
+    _pollForWifiUuidInBackground(bleMac);
+
+    print('✅ Device registered and linked: $bleMac');
   }
+
+  void _pollForWifiUuidInBackground(String bleMac) async {
+    final apiService = Provider.of<ApiService>(context, listen: false);
+    final settings = Provider.of<SettingsManager>(context, listen: false);
+
+    for (int attempt = 1; attempt <= 10; attempt++) {
+      await Future.delayed(const Duration(seconds: 3));
+      final wifiUuid = await apiService.getWifiUuidByBleUuid(bleMac);
+      if (wifiUuid != null) {
+        print('✅ ESP32 WiFi UUID found in background: $wifiUuid');
+        await AuthService().addUserDevice(wifiUuid);
+        await settings.setConnectedDeviceUuid(wifiUuid);
+        await settings.setCurrentDeviceRole('admin');
+        break;
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -890,8 +1008,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                             ? 'Bluetooth Connected ✓'
                             : 'Bluetooth Disconnected ⚠️',
                         style: TextStyle(
-                          color:
-                          _bleConnected ? Colors.green : Colors.orange,
+                          color: _bleConnected ? Colors.green : Colors.orange,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -900,8 +1017,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                             ? widget.bluetoothDevice.platformName
                             : widget.bluetoothDevice.remoteId.str,
                         style: TextStyle(
-                          color:
-                          _bleConnected ? Colors.green : Colors.orange,
+                          color: _bleConnected ? Colors.green : Colors.orange,
                           fontSize: 12,
                         ),
                       ),
@@ -939,8 +1055,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                 children: [
                   const Text(
                     'Select Wi-Fi Network',
-                    style:
-                    TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 4),
                   const Text(
@@ -956,8 +1071,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                           child: SizedBox(
                             width: 16,
                             height: 16,
-                            child:
-                            CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         ),
                       Text(
@@ -997,22 +1111,18 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Column(
-                        children:
-                        _wifiNetworks.asMap().entries.map((entry) {
+                        children: _wifiNetworks.asMap().entries.map((entry) {
                           final i = entry.key;
                           final ssid = entry.value;
                           final isSelected = _selectedSSID == ssid;
 
                           return Column(
                             children: [
-                              if (i > 0)
-                                const Divider(height: 1, thickness: 1),
+                              if (i > 0) const Divider(height: 1, thickness: 1),
                               ListTile(
                                 leading: Icon(
                                   Icons.wifi,
-                                  color: isSelected
-                                      ? Colors.blue
-                                      : Colors.grey,
+                                  color: isSelected ? Colors.blue : Colors.grey,
                                 ),
                                 title: Text(
                                   ssid,
@@ -1020,13 +1130,12 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                                     fontWeight: isSelected
                                         ? FontWeight.bold
                                         : FontWeight.normal,
-                                    color:
-                                    isSelected ? Colors.blue : null,
+                                    color: isSelected ? Colors.blue : null,
                                   ),
                                 ),
                                 trailing: isSelected
                                     ? const Icon(Icons.check_circle,
-                                    color: Colors.blue)
+                                        color: Colors.blue)
                                     : null,
                                 onTap: () =>
                                     setState(() => _selectedSSID = ssid),
@@ -1039,8 +1148,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                   const SizedBox(height: 20),
                   const Text(
                     'Wi-Fi Password',
-                    style:
-                    TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   TextField(
@@ -1056,7 +1164,7 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                               : Icons.visibility,
                         ),
                         onPressed: () => setState(
-                                () => _obscurePassword = !_obscurePassword),
+                            () => _obscurePassword = !_obscurePassword),
                       ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
@@ -1074,20 +1182,20 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                           : _connectAndFinish,
                       icon: _isSaving
                           ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
                           : const Icon(Icons.done),
                       label: Text(
                         _isSaving
                             ? 'Setting up…'
                             : !_bleConnected
-                            ? 'Bluetooth Disconnected'
-                            : 'Connect & Add to Favourites',
+                                ? 'Bluetooth Disconnected'
+                                : 'Connect & Add to Favourites',
                         style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.bold),
                       ),
@@ -1109,16 +1217,14 @@ class _WiFiSetupScreenState extends State<WiFiSetupScreen> {
                     child: const Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.info_outline,
-                            color: Colors.blue, size: 18),
+                        Icon(Icons.info_outline, color: Colors.blue, size: 18),
                         SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             'The Wi-Fi credentials are sent to your alarm device '
-                                'via Bluetooth. Once connected to Wi-Fi, the device will '
-                                'be controllable from anywhere.',
-                            style:
-                            TextStyle(color: Colors.blue, fontSize: 12),
+                            'via Bluetooth. Once connected to Wi-Fi, the device will '
+                            'be controllable from anywhere.',
+                            style: TextStyle(color: Colors.blue, fontSize: 12),
                           ),
                         ),
                       ],
@@ -1182,19 +1288,19 @@ class _StepDot extends StatelessWidget {
             color: done
                 ? Colors.green
                 : active
-                ? Colors.blue
-                : Colors.grey.shade700,
+                    ? Colors.blue
+                    : Colors.grey.shade700,
           ),
           child: Center(
             child: done
                 ? const Icon(Icons.check, color: Colors.white, size: 16)
                 : Text(
-              '${step + 1}',
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold),
-            ),
+                    '${step + 1}',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold),
+                  ),
           ),
         ),
         const SizedBox(height: 4),
@@ -1205,8 +1311,8 @@ class _StepDot extends StatelessWidget {
             color: done
                 ? Colors.green
                 : active
-                ? Colors.blue
-                : Colors.grey,
+                    ? Colors.blue
+                    : Colors.grey,
           ),
         ),
       ],

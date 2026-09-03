@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'api_service.dart';
+import 'settings_manager.dart';
 
 class ConnectedDevicesScreen extends StatefulWidget {
   const ConnectedDevicesScreen({Key? key}) : super(key: key);
@@ -26,7 +27,8 @@ class _ConnectedDevicesScreenState extends State<ConnectedDevicesScreen> {
     setState(() => _isLoading = true);
     
     try {
-      final devices = await apiService.getMobileDevices();
+      final deviceUuid = SettingsManager().connectedDeviceUuid;
+      final devices = await apiService.getMobileDevices(deviceUuid: deviceUuid);
       setState(() {
         _connectedDevices = devices;
         _isLoading = false;
@@ -69,10 +71,14 @@ class _ConnectedDevicesScreenState extends State<ConnectedDevicesScreen> {
                           color: isOnline ? Colors.green : Colors.red,
                         ),
                       ),
-                      title: Text(d['display_name'] ?? 'Unknown Device'),
+                      title: Text(d['display_name'] ?? 'Unknown User'),
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          if ((d['email'] ?? '').toString().isNotEmpty)
+                            Text(d['email']),
+                          if ((d['access_type'] ?? '').toString().isNotEmpty)
+                            Text('Access: ${d['access_type']}'),
                           Text('Last active: ${d['last_active_at']}'),
                           Text(d['device_model'] ?? '', style: TextStyle(fontSize: 12, color: Colors.grey)),
                         ],

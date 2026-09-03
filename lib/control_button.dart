@@ -80,7 +80,7 @@ class _ControlButtonState extends State<ControlButton>
                 border: Border.all(
                   color: widget.isActive
                       ? widget.color
-                      : Colors.white.withOpacity(0.2),
+                      : Colors.black26.withOpacity(0.2),
                   width: 2,
                 ),
                 boxShadow: widget.isActive
@@ -99,7 +99,7 @@ class _ControlButtonState extends State<ControlButton>
                   Icon(
                     widget.icon,
                     size: 32,
-                    color: widget.isActive ? widget.color : Colors.white70,
+                    color: widget.isActive ? widget.color : Colors.black54,
                   ),
                   SizedBox(height: 8),
                   Text(
@@ -107,7 +107,7 @@ class _ControlButtonState extends State<ControlButton>
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: widget.isActive ? widget.color : Colors.white70,
+                      color: widget.isActive ? widget.color : Colors.black,
                     ),
                   ),
                   if (widget.isActive) ...[

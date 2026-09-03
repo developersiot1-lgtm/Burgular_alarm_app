@@ -13,6 +13,7 @@ class ConnectionManager with ChangeNotifier {
   ConnectionMode _currentMode = ConnectionMode.offline;
   bool _isOnline = false;
   String? _deviceUuid;
+  int _wifiFailCount = 0;
 
   // ✅ FIX: use Timer.periodic — no more recursive Future.delayed memory leak
   Timer? _healthCheckTimer;
@@ -22,11 +23,11 @@ class ConnectionManager with ChangeNotifier {
   static const String _baseUrl = 'https://monsow.in/alarm/index.php';
 
   // Getters
-  ConnectionMode get currentMode    => _currentMode;
-  bool get isOnline                 => _isOnline;
-  bool get isWiFiMode               => _currentMode == ConnectionMode.wifi;
-  bool get isBluetoothMode          => _currentMode == ConnectionMode.bluetooth;
-  bool get isOffline                => _currentMode == ConnectionMode.offline;
+  ConnectionMode get currentMode => _currentMode;
+  bool get isOnline => _isOnline;
+  bool get isWiFiMode => _currentMode == ConnectionMode.wifi;
+  bool get isBluetoothMode => _currentMode == ConnectionMode.bluetooth;
+  bool get isOffline => _currentMode == ConnectionMode.offline;
 
   // ─────────────────────────────────────────────
   // INIT
@@ -39,18 +40,18 @@ class ConnectionManager with ChangeNotifier {
     final wifiOk = await _tryWiFiConnection();
     if (wifiOk) {
       _currentMode = ConnectionMode.wifi;
-      _isOnline    = true;
+      _isOnline = true;
       print('✅ Connected via WiFi');
     } else {
       print('⚠️ WiFi unavailable — trying Bluetooth...');
       final bleOk = await _bleController.connectToDevice(deviceUuid);
       if (bleOk) {
         _currentMode = ConnectionMode.bluetooth;
-        _isOnline    = true;
+        _isOnline = true;
         print('✅ Connected via Bluetooth');
       } else {
         _currentMode = ConnectionMode.offline;
-        _isOnline    = false;
+        _isOnline = false;
         print('❌ Offline mode');
       }
     }
@@ -69,15 +70,24 @@ class ConnectionManager with ChangeNotifier {
       final conn = await Connectivity().checkConnectivity();
       if (conn == ConnectivityResult.none) return false;
 
-      // Verify server reachability (don't depend on google.com being reachable on all networks).
-      final res = await http.get(
-        Uri.parse('$_baseUrl?action=device_info&device_uuid=$_deviceUuid'),
-      ).timeout(const Duration(seconds: 10));
+      // Verify real internet
+      final lookup = await InternetAddress.lookup('google.com')
+          .timeout(const Duration(seconds: 5));
+      if (lookup.isEmpty || lookup[0].rawAddress.isEmpty) return false;
+
+      // Verify device exists on server
+      final res = await http
+          .get(
+            Uri.parse('$_baseUrl?action=device_info&device_uuid=$_deviceUuid'),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        // Adjust keys to whatever your PHP returns
-        return data['device_id'] != null || data['exists'] == true;
+        return data['id'] != null ||
+            data['device_id'] != null ||
+            data['device_uuid'] != null ||
+            data['exists'] == true;
       }
 
       return false;
@@ -98,14 +108,13 @@ class ConnectionManager with ChangeNotifier {
           print('🔄 Switching to WiFi mode');
           if (_bleController.isConnected) await _bleController.disconnect();
           _currentMode = ConnectionMode.wifi;
-          _isOnline    = true;
+          _isOnline = true;
           notifyListeners();
         }
       } else if (_currentMode == ConnectionMode.wifi) {
-        print('🔄 WiFi lost — trying Bluetooth fallback');
-        final bleOk = await _bleController.connectToDevice(_deviceUuid!);
-        _currentMode = bleOk ? ConnectionMode.bluetooth : ConnectionMode.offline;
-        _isOnline    = bleOk;
+        print('?? WiFi lost - offline mode');
+        _currentMode = ConnectionMode.offline;
+        _isOnline = false;
         notifyListeners();
       }
     });
@@ -116,21 +125,25 @@ class ConnectionManager with ChangeNotifier {
   // ✅ FIX: Timer.periodic instead of recursive Future.delayed
   void _startHealthCheck() {
     _healthCheckTimer?.cancel();
-    _healthCheckTimer =
-        Timer.periodic(const Duration(seconds: 60), (_) async {
-          if (_currentMode == ConnectionMode.wifi) {
-            final wifiOk = await _tryWiFiConnection();
-            if (!wifiOk) {
-              print('⚠️ Health check: WiFi failed');
-              final bleOk =
-              await _bleController.connectToDevice(_deviceUuid!);
-              _currentMode =
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
+      if (_currentMode == ConnectionMode.wifi) {
+        final wifiOk = await _tryWiFiConnection();
+        if (wifiOk) {
+          _wifiFailCount = 0;
+        } else {
+          _wifiFailCount++;
+        }
+        if (!wifiOk && _wifiFailCount >= 3) {
+          print('⚠️ Health check: WiFi failed');
+          final bleOk = await _bleController.connectToDevice(_deviceUuid!);
+          _currentMode =
               bleOk ? ConnectionMode.bluetooth : ConnectionMode.offline;
-              _isOnline = bleOk;
-              notifyListeners();
-            }
-          }
-        });
+          _isOnline = bleOk;
+          _wifiFailCount = bleOk ? 0 : _wifiFailCount;
+          notifyListeners();
+        }
+      }
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -138,26 +151,27 @@ class ConnectionManager with ChangeNotifier {
   // ─────────────────────────────────────────────
 
   Future<bool> sendAlarmCommand(String state, {String? user}) async {
-    print('📤 Sending alarm command: $state via ${_currentMode.name}');
+    print('Sending alarm command: $state via ${_currentMode.name}');
     if (_currentMode == ConnectionMode.wifi) {
       return _sendViaWiFi(state, user);
-    } else if (_currentMode == ConnectionMode.bluetooth) {
-      return _sendViaBluetooth(state);
     }
-    return false; // offline — caller should queue
+    print('Alarm command blocked: WiFi/server online mode required');
+    return false;
   }
 
   Future<bool> _sendViaWiFi(String state, String? user) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_baseUrl?action=system_state'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'state': state,
-          'user':  user ?? 'Mobile App',
-          'device_uuid': _deviceUuid,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .post(
+            Uri.parse('$_baseUrl?action=system_state'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'state': state,
+              'user': user ?? 'Mobile App',
+              'device_uuid': _deviceUuid,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         print('✅ WiFi command sent');
@@ -165,13 +179,7 @@ class ConnectionManager with ChangeNotifier {
       }
       throw Exception('Bad status: ${res.statusCode}');
     } catch (e) {
-      print('❌ WiFi command error: $e — trying Bluetooth fallback');
-      final bleOk = await _bleController.connectToDevice(_deviceUuid!);
-      if (bleOk) {
-        _currentMode = ConnectionMode.bluetooth;
-        notifyListeners();
-        return _sendViaBluetooth(state);
-      }
+      print('WiFi command error: $e - command not sent offline');
       return false;
     }
   }
@@ -186,16 +194,18 @@ class ConnectionManager with ChangeNotifier {
     print('🚨 TRIGGERING SOS');
     if (_currentMode == ConnectionMode.wifi) {
       try {
-        final res = await http.post(
-          Uri.parse('$_baseUrl?action=system_state'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'state': 'alarm',
-            'user': 'SOS TRIGGER',
-            'device_uuid': _deviceUuid,
-            'emergency': true,
-          }),
-        ).timeout(const Duration(seconds: 5));
+        final res = await http
+            .post(
+              Uri.parse('$_baseUrl?action=system_state'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'state': 'alarm',
+                'user': 'SOS TRIGGER',
+                'device_uuid': _deviceUuid,
+                'emergency': true,
+              }),
+            )
+            .timeout(const Duration(seconds: 5));
         if (res.statusCode == 200) return true;
       } catch (_) {}
     }
@@ -212,11 +222,11 @@ class ConnectionManager with ChangeNotifier {
     final wifiOk = await _tryWiFiConnection();
     if (wifiOk) {
       _currentMode = ConnectionMode.wifi;
-      _isOnline    = true;
+      _isOnline = true;
     } else {
       final bleOk = await _bleController.connectToDevice(_deviceUuid!);
       _currentMode = bleOk ? ConnectionMode.bluetooth : ConnectionMode.offline;
-      _isOnline    = bleOk;
+      _isOnline = bleOk;
     }
     notifyListeners();
   }
@@ -227,47 +237,59 @@ class ConnectionManager with ChangeNotifier {
 
   String getConnectionStatus() {
     switch (_currentMode) {
-      case ConnectionMode.wifi:      return 'Connected via WiFi';
-      case ConnectionMode.bluetooth: return 'Connected via Bluetooth';
-      case ConnectionMode.offline:   return 'Offline';
+      case ConnectionMode.wifi:
+        return 'Connected via WiFi';
+      case ConnectionMode.bluetooth:
+        return 'Connected via Bluetooth';
+      case ConnectionMode.offline:
+        return 'Offline';
     }
   }
 
   String getConnectionEmoji() {
     switch (_currentMode) {
-      case ConnectionMode.wifi:      return '🌐';
-      case ConnectionMode.bluetooth: return '📱';
-      case ConnectionMode.offline:   return '❌';
+      case ConnectionMode.wifi:
+        return '🌐';
+      case ConnectionMode.bluetooth:
+        return '📱';
+      case ConnectionMode.offline:
+        return '❌';
     }
   }
 
   IconData getConnectionIcon() {
     switch (_currentMode) {
-      case ConnectionMode.wifi:      return Icons.wifi;
-      case ConnectionMode.bluetooth: return Icons.bluetooth_connected;
-      case ConnectionMode.offline:   return Icons.cloud_off;
+      case ConnectionMode.wifi:
+        return Icons.wifi;
+      case ConnectionMode.bluetooth:
+        return Icons.bluetooth_connected;
+      case ConnectionMode.offline:
+        return Icons.cloud_off;
     }
   }
 
   Color getConnectionColor() {
     switch (_currentMode) {
-      case ConnectionMode.wifi:      return Colors.green;
-      case ConnectionMode.bluetooth: return Colors.orange;
-      case ConnectionMode.offline:   return Colors.red;
+      case ConnectionMode.wifi:
+        return Colors.green;
+      case ConnectionMode.bluetooth:
+        return Colors.orange;
+      case ConnectionMode.offline:
+        return Colors.red;
     }
   }
 
   Map<String, dynamic> getStatusInfo() => {
-    'mode':         _currentMode.name,
-    'online':       _isOnline,
-    'status':       getConnectionStatus(),
-    'emoji':        getConnectionEmoji(),
-    'icon':         getConnectionIcon(),
-    'color':        getConnectionColor(),
-    'is_wifi':      isWiFiMode,
-    'is_bluetooth': isBluetoothMode,
-    'is_offline':   isOffline,
-  };
+        'mode': _currentMode.name,
+        'online': _isOnline,
+        'status': getConnectionStatus(),
+        'emoji': getConnectionEmoji(),
+        'icon': getConnectionIcon(),
+        'color': getConnectionColor(),
+        'is_wifi': isWiFiMode,
+        'is_bluetooth': isBluetoothMode,
+        'is_offline': isOffline,
+      };
 
   // ─────────────────────────────────────────────
   // DISPOSE — ✅ cancels timer properly

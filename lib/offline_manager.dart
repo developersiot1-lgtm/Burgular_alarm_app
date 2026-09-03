@@ -154,6 +154,7 @@ class OfflineManager with ChangeNotifier {
               body: jsonEncode({
                 'state': action['state'],
                 'user':  action['user'] ?? 'offline_sync',
+                'device_uuid': action['device_uuid'] ?? 'default',
               }),
             ).timeout(const Duration(seconds: 10));
             if (res.statusCode != 200) {
@@ -171,6 +172,8 @@ class OfflineManager with ChangeNotifier {
                 'event':  action['event']  ?? 'Offline Action',
                 'device': action['device'] ?? 'Mobile App',
                 'user':   action['user']   ?? 'offline_sync',
+                if (action['device_uuid'] != null)
+                  'device_uuid': action['device_uuid'],
               }),
             ).timeout(const Duration(seconds: 10));
             print('✅ Synced activity log');

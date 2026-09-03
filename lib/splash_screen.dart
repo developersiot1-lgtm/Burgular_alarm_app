@@ -3,11 +3,6 @@ import 'auth_service.dart';
 import 'login_screen.dart';
 import 'favourite_screen.dart';
 
-// ================================================================
-// splash_screen.dart  (UPDATED)
-// Checks saved login session → routes to Login or FavoritesScreen
-// ================================================================
-
 class SplashScreen extends StatefulWidget {
   const SplashScreen({Key? key}) : super(key: key);
   @override
@@ -17,8 +12,8 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
-  late Animation<double>   _fadeAnimation;
-  late Animation<double>   _scaleAnimation;
+  late Animation<double> _fadeAnimation;
+  late Animation<double> _scaleAnimation;
 
   @override
   void initState() {
@@ -28,12 +23,16 @@ class _SplashScreenState extends State<SplashScreen>
       vsync: this,
     );
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _animationController,
-          curve: const Interval(0.0, 0.5, curve: Curves.easeIn)),
+      CurvedAnimation(
+        parent: _animationController,
+        curve: const Interval(0.0, 0.5, curve: Curves.easeIn),
+      ),
     );
     _scaleAnimation = Tween<double>(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(parent: _animationController,
-          curve: const Interval(0.0, 0.5, curve: Curves.easeOut)),
+      CurvedAnimation(
+        parent: _animationController,
+        curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
+      ),
     );
     _startSplash();
   }
@@ -42,18 +41,14 @@ class _SplashScreenState extends State<SplashScreen>
     _animationController.forward();
     await Future.delayed(const Duration(milliseconds: 2500));
 
-    // ── Check if user is already logged in ──────────────────────
     await AuthService().loadSession();
-
     if (!mounted) return;
 
     if (AuthService().isLoggedIn) {
-      // Already logged in — go straight to devices list
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const FavoritesScreen()),
       );
     } else {
-      // Not logged in — show login screen
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const LoginScreen()),
       );
@@ -69,7 +64,8 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1B2A),
+      // CHANGED: white background instead of dark
+      backgroundColor: Colors.white,
       body: Center(
         child: AnimatedBuilder(
           animation: _animationController,
@@ -81,28 +77,37 @@ class _SplashScreenState extends State<SplashScreen>
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Container(
-                      width: 120, height: 120,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(colors: [Colors.blue, Colors.blue.shade700]),
-                        shape: BoxShape.circle,
-                        boxShadow: [BoxShadow(
-                          color: Colors.blue.withOpacity(0.3),
-                          blurRadius: 30, spreadRadius: 10,
-                        )],
-                      ),
-                      child: const Icon(Icons.security, size: 60, color: Colors.white),
+                    Image.asset(
+                      'assets/monsow_logo.jpg',
+                      width: 220,
+                      height: 100,
+                      fit: BoxFit.contain,
                     ),
                     const SizedBox(height: 30),
-                    const Text('Alarm Control',
-                        style: TextStyle(color: Colors.white, fontSize: 32,
-                            fontWeight: FontWeight.bold, letterSpacing: 2)),
+                    const Text(
+                      'Monsow Alarm',
+                      // CHANGED: dark text for white background
+                      style: TextStyle(
+                        color: Colors.black,
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 2,
+                      ),
+                    ),
                     const SizedBox(height: 10),
-                    const Text('Smart Security System',
-                        style: TextStyle(color: Colors.white70, fontSize: 16, letterSpacing: 1)),
+                    const Text(
+                      'Smart Security System',
+                      style: TextStyle(
+                        color: Colors.black54,
+                        fontSize: 16,
+                        letterSpacing: 1,
+                      ),
+                    ),
                     const SizedBox(height: 40),
                     const CircularProgressIndicator(
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue)),
+                      // CHANGED: use a darker/brand color on white
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                    ),
                   ],
                 ),
               ),
@@ -115,9 +120,15 @@ class _SplashScreenState extends State<SplashScreen>
         color: Colors.transparent,
         child: FadeTransition(
           opacity: _fadeAnimation,
-          child: const Text('Version 1.0.0',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white38, fontSize: 12)),
+          child: const Text(
+            'Version 1.0.0',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              // CHANGED: lighter grey on white
+              color: Colors.black38,
+              fontSize: 12,
+            ),
+          ),
         ),
       ),
     );

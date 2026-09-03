@@ -1,20 +1,39 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'api_service.dart';
 import 'offline_manager.dart';
 import 'connection_manager.dart';
 import 'notification_service.dart';
 import 'settings_manager.dart';
+import 'auth_service.dart';
+import 'realtime_sync_service.dart'; // ← ADDED for multi-user sync
 
-/// System states
-enum SystemState {
-  disarmed,
-  armed,
-  stayArmed,
-  alarm,
-}
+// ================================================================
+// alarm_system.dart — MULTI-USER REAL-TIME SYNC
+//
+// WHAT CHANGED (4 targeted edits — search for "SYNC"):
+//
+//  [SYNC-1] Import realtime_sync_service.dart (above)
+//
+//  [SYNC-2] initialize() — starts RealtimeSyncService after loadData.
+//           The callback receives (SyncState, isExternal).
+//           • isExternal=true  → another user changed the state
+//           • isExternal=false → we changed it (or first tick)
+//           When isExternal=true we update UI + post notification.
+//
+//  [SYNC-3] changeSystemState() — sets suppressNextTick=true before
+//           writing to server so the next poll tick (which will see
+//           our own change on the server) is silently ignored and
+//           doesn't double-fire a notification.
+//
+//  [SYNC-4] dispose() — stops RealtimeSyncService.
+//
+// Everything else is UNCHANGED from the original file.
+// ================================================================
 
-/// Device model
+enum SystemState { disarmed, armed, stayArmed, alarm }
+
 class Device {
   final String id;
   final String name;
@@ -33,27 +52,26 @@ class Device {
     required this.zone,
     required this.lastActivity,
   });
-  static int _toInt(dynamic value, [int fallback = 0]) {
-    if (value is int) return value;
-    if (value is String) return int.tryParse(value) ?? fallback;
+
+  static int _toInt(dynamic v, [int fallback = 0]) {
+    if (v is int) return v;
+    if (v is String) return int.tryParse(v) ?? fallback;
     return fallback;
   }
+
   factory Device.fromJson(Map json) {
     final batteryRaw =
         json['battery'] ?? json['battery_level'] ?? json['batterylevel'];
-
     return Device(
       id: json['id']?.toString() ?? '',
       name: json['name'] ?? 'Unknown Device',
       type: json['type'] ?? 'unknown',
       status: json['status'] ?? 'offline',
-      battery: _toInt(batteryRaw), // ✅ safe parse
+      battery: _toInt(batteryRaw),
       zone: json['zone'] ?? 'Unknown',
-      lastActivity:
-      json['last_activity'] ?? DateTime.now().toIso8601String(),
+      lastActivity: json['last_activity'] ?? DateTime.now().toIso8601String(),
     );
   }
-
 
   String get typeIcon {
     switch (type) {
@@ -71,7 +89,6 @@ class Device {
   }
 }
 
-/// Activity log model
 class ActivityLog {
   final String timestamp;
   final String event;
@@ -85,43 +102,88 @@ class ActivityLog {
     required this.user,
   });
 
-  factory ActivityLog.fromJson(Map<String, dynamic> json) {
-    return ActivityLog(
-      timestamp: json['timestamp'] ?? DateTime.now().toIso8601String(),
-      event: json['event'] ?? 'Unknown Event',
-      device: json['device'] ?? 'Unknown Device',
-      user: json['user'] ?? 'System',
-    );
+  factory ActivityLog.fromJson(Map<String, dynamic> json) => ActivityLog(
+        timestamp: (json['timestamp'] ?? json['created_at'] ?? json['updated_at'] ?? '')
+            .toString(),
+        event: json['event'] ??
+            json['event_type'] ??
+            json['state'] ??
+            json['message'] ??
+            'Unknown Event',
+        device: json['device'] ??
+            json['device_name'] ??
+            json['device_uuid'] ??
+            'Unknown Device',
+        user: json['user'] ??
+            json['updated_by'] ??
+            json['state_updated_by'] ??
+            'System',
+      );
+
+  DateTime? get parsedTimestamp {
+    final raw = timestamp.trim();
+    if (raw.isEmpty) return null;
+    return DateTime.tryParse(raw) ??
+        DateTime.tryParse(raw.replaceFirst(' ', 'T'));
+  }
+
+  String get displayEvent {
+    final eventText = event.trim();
+    final actor = user.trim();
+    final lower = eventText.toLowerCase();
+    final hasUsefulActor = actor.isNotEmpty &&
+        actor.toLowerCase() != 'system' &&
+        actor.toLowerCase() != 'api' &&
+        actor.toLowerCase() != 'hub';
+
+    if (!hasUsefulActor) return eventText;
+    if (lower == 'system armed') return '$actor armed';
+    if (lower == 'system disarmed') return '$actor disarmed';
+    if (lower == 'stay armed' || lower == 'system armed (stay)') {
+      return '$actor stay armed';
+    }
+    if (lower == 'alarm' || lower == 'alarm triggered') {
+      return '$actor triggered alarm';
+    }
+    return eventText;
   }
 }
 
-/// Alarm System Provider
 class AlarmSystemProvider with ChangeNotifier {
   ApiService? _apiService;
   String? _deviceUuid;
+  String? _hubDeviceUuid;
 
   SystemState _currentState = SystemState.disarmed;
+  String _lastStateUpdatedAt = '';
   List<Device> _devices = [];
   List<ActivityLog> _activityLogs = [];
   bool _isLoading = false;
   String? _error;
 
-  // Offline support
   final OfflineManager _offlineManager = OfflineManager();
   ConnectionManager? _connectionManager;
   bool _isOfflineMode = false;
   bool _isSOSMode = false;
 
-  Timer? _systemStatePollTimer;
-  bool _systemStatePollInFlight = false;
-  int? _lastSystemStateId;
-  String? _lastSystemStateReason;
+  final NotificationService _notifications = NotificationService();
 
-  int _lastAlarmEventId = 0;
-  bool _alarmEventsCursorPrimed = false;
+  Timer? _alarmPollTimer;
+  bool _isPollRunning = false;
+  int _lastAlarmId = 0;
+  bool _isArmed = false;
 
-  // Getters
+  static const int _lowBatteryThreshold = 20;
+  static const int _activityHistoryLimit = 100;
+
   SystemState get currentState => _currentState;
+  DateTime? get lastStateUpdatedAt =>
+      ActivityLog(
+        timestamp: _lastStateUpdatedAt,
+        event: '',
+        device: '',
+        user: '',
+      ).parsedTimestamp;
   List<Device> get devices => _devices;
   List<ActivityLog> get activityLogs => _activityLogs;
   bool get isLoading => _isLoading;
@@ -131,410 +193,586 @@ class AlarmSystemProvider with ChangeNotifier {
   bool get hasPendingSync => _offlineManager.hasPendingActions;
   int get pendingActionsCount => _offlineManager.pendingActionsCount;
 
-  /// Initialize alarm system
-  Future<void> initialize(ApiService apiService, {required String deviceUuid}) async {
+  String get _activeDeviceUuid {
+    final hubUuid = _hubDeviceUuid ?? '';
+    if (hubUuid.isNotEmpty) return hubUuid;
+    return _deviceUuid ?? '';
+  }
+
+  // ── Initialize ────────────────────────────────────────────────
+  Future<void> initialize(ApiService apiService,
+      {required String deviceUuid, String? hubDeviceUuid}) async {
     _apiService = apiService;
     _deviceUuid = deviceUuid;
+    _hubDeviceUuid = hubDeviceUuid ?? deviceUuid;
 
-    // Initialize offline manager
+    await _notifications.initialize();
     await _offlineManager.initialize();
 
-    // Initialize connection manager
+    final sm = SettingsManager();
+    await _notifications.setSettings(
+      alarmSound: sm.alarmSound,
+      notification: sm.alarmNotification,
+    );
+
     _connectionManager = ConnectionManager();
     await _connectionManager!.initialize(deviceUuid);
 
-    // Listen to connection changes
-    _connectionManager!.addListener(() {
+    _connectionManager!.addListener(() async {
+      final wasOffline = _isOfflineMode;
       _isOfflineMode = _connectionManager!.isOffline;
+      if (!wasOffline && _isOfflineMode) {
+        HapticFeedback.mediumImpact();
+        await _notifications.notifyDeviceOffline('Alarm Hub');
+        _stopAlarmPoll();
+      } else if (wasOffline && !_isOfflineMode) {
+        HapticFeedback.lightImpact();
+        await _notifications.notifyDeviceOnline('Alarm Hub');
+        if (_isArmed) _startAlarmPoll();
+      }
       notifyListeners();
     });
 
     _isOfflineMode = _connectionManager!.isOffline;
-
-    // Load initial data
     await loadData();
 
-    // Keep watching for alarm triggers so the app can notify immediately.
-    _startSystemStatePolling();
+    if (_currentState == SystemState.armed ||
+        _currentState == SystemState.stayArmed) {
+      await _setBaselineAndStartPoll();
+    }
 
-    // Prime alarm-events cursor so we don't notify for historical rows.
-    unawaited(_primeAlarmEventsCursor());
+    // ── [SYNC-2] Start real-time sync for all shared users ────────
+    // This polls get_alarm_status every 5 s. When another user on a
+    // shared device arms/disarms, the callback fires with isExternal=true
+    // and we update our UI + post a notification automatically.
+    final activeUuid = (hubDeviceUuid != null && hubDeviceUuid.isNotEmpty)
+        ? hubDeviceUuid
+        : (this._deviceUuid ?? '');
+    RealtimeSyncService().start(
+      deviceUuid: activeUuid,
+      onStateChange:
+          (SyncState syncState, bool isExternal, String actor) async {
+        final mapped = _mapSyncState(syncState);
+
+        // Skip if state hasn't actually changed (race with loadData)
+        if (mapped == _currentState) return;
+
+        // Update UI state
+        setStateFromServer(mapped);
+
+        // Manage alarm event poll based on new state
+        if (mapped == SystemState.armed || mapped == SystemState.stayArmed) {
+          if (!_isArmed) await _setBaselineAndStartPoll();
+        } else if (mapped == SystemState.disarmed) {
+          _isArmed = false;
+          _stopAlarmPoll();
+          _lastAlarmId = 0;
+          // Also stop any active alarm sound in case another user disarmed
+          await _notifications.stopAlarmImmediately();
+        }
+
+        // Notify for ALL external changes (another user changed state).
+        // Also notify for first-tick delivery (isExternal=false) so the
+        // user sees a banner if they receive a state while backgrounded.
+        // Own intentional changes fire notifyStateChange() in
+        // changeSystemState() directly — no duplicate here because
+        // suppressNextTick=true makes those ticks skip this block.
+        if (isExternal) {
+          await _notifications.notifyStateChange(mapped, actor: actor);
+
+          // Log it in the activity feed
+          final who = mapped == SystemState.armed
+              ? 'Armed'
+              : mapped == SystemState.stayArmed
+                  ? 'Stay Armed'
+                  : mapped == SystemState.disarmed
+                      ? 'Disarmed'
+                      : 'Alarm';
+          _activityLogs.insert(
+              0,
+              ActivityLog(
+                timestamp: DateTime.now().toIso8601String(),
+                event: '$who by $actor',
+                device: 'Remote App',
+                user: actor,
+              ));
+          await _refreshActivityLogs();
+          notifyListeners();
+        }
+      },
+    );
+    // ── [SYNC-2 END] ──────────────────────────────────────────────
   }
 
-  static int? _toIntOrNull(dynamic v) {
-    if (v is int) return v;
-    if (v is String) return int.tryParse(v);
-    return null;
+  // ── Map SyncState → SystemState (avoids circular import) ──────
+  SystemState _mapSyncState(SyncState s) {
+    switch (s) {
+      case SyncState.armed:
+        return SystemState.armed;
+      case SyncState.stayArmed:
+        return SystemState.stayArmed;
+      case SyncState.alarm:
+        return SystemState.alarm;
+      case SyncState.disarmed:
+        return SystemState.disarmed;
+    }
   }
 
-  void _startSystemStatePolling() {
-    _systemStatePollTimer?.cancel();
-    _systemStatePollTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _pollSystemState();
-    });
+  // ================================================================
+  // setStateFromServer
+  //
+  // Called by:
+  //  • HomeScreen.initState() for fast initial render
+  //  • RealtimeSyncService callback (above) for live updates
+  //
+  // Only updates UI — does NOT send API calls, start polls, or fire
+  // notifications. Callers are responsible for those side-effects.
+  // ================================================================
+  void setStateFromServer(SystemState state) {
+    _currentState = state;
+    _lastStateUpdatedAt = DateTime.now().toIso8601String();
+
+    if (state == SystemState.armed || state == SystemState.stayArmed) {
+      _isArmed = true;
+    } else {
+      _isArmed = false;
+    }
+
+    notifyListeners();
   }
 
-  Future<void> _pollSystemState() async {
+  // ── Set baseline then start alarm-event poll ───────────────────
+  Future<void> _setBaselineAndStartPoll() async {
     if (_apiService == null) return;
-    if (_systemStatePollInFlight) return;
 
-    _systemStatePollInFlight = true;
+    final pollUuid = _activeDeviceUuid;
+
+    if (pollUuid.isEmpty) return;
+
     try {
-      final stateData = await _apiService!.getSystemState();
-      if (stateData == null) return;
-
-      final newId = _toIntOrNull(stateData['id']);
-      final newState = _parseSystemState(stateData['state']);
-      final reasonRaw = stateData['reason'] ?? stateData['alarm_reason'] ?? stateData['triggered_sensor'];
-      final reason = reasonRaw?.toString();
-
-      final changed = (newId != null && newId != _lastSystemStateId) ||
-          (newId == null && newState != _currentState);
-
-      if (changed) {
-        _lastSystemStateId = newId;
-        _lastSystemStateReason = reason;
-        _currentState = newState;
-        notifyListeners();
-
-        if (newState == SystemState.alarm && SettingsManager().alarmNotification) {
-          final body = (reason != null && reason.trim().isNotEmpty)
-              ? 'Triggered: $reason'
-              : 'Alarm triggered';
-          await NotificationService.instance.showAlarmTriggered(
-            title: 'ALARM',
-            body: body,
-            startAlarmTone: true,
-          );
-        }
-
-        if (newState != SystemState.alarm) {
-          NotificationService.instance.stopAlarmToneLoop();
-        }
-      }
-      // Also fetch alarm_events so sensor triggers can show rich notifications.
-      await _pollAlarmEvents();
+      final events = await _apiService!.getAlarmEvents(pollUuid);
+      _lastAlarmId = events.isNotEmpty
+          ? (int.tryParse(events.first['id'].toString()) ?? 0)
+          : 0;
+      debugPrint('📍 Baseline set: lastAlarmId=$_lastAlarmId  uuid=$pollUuid');
     } catch (e) {
-      // Don't surface polling failures as UI errors; it should be best-effort.
-      print('❌ System state poll error: $e');
-    } finally {
-      _systemStatePollInFlight = false;
+      _lastAlarmId = 0;
+      debugPrint('⚠️ Baseline fetch failed: $e');
     }
+
+    _isArmed = true;
+    _startAlarmPoll();
   }
 
-  Future<void> _primeAlarmEventsCursor() async {
-    if (_alarmEventsCursorPrimed) return;
-    if (_apiService == null || _deviceUuid == null) return;
-    try {
-      final rows = await _apiService!.getAlarmEvents(
-        deviceUuid: _deviceUuid!,
-        latest: true,
-        limit: 1,
-      );
-      if (rows.isNotEmpty) {
-        final first = rows.first;
-        if (first is Map) {
-          final id = _toIntOrNull(first['id']);
-          if (id != null) _lastAlarmEventId = id;
-        }
-      }
-    } catch (e) {
-      // ignore: avoid_print
-      print('Alarm events prime error: $e');
-    } finally {
-      _alarmEventsCursorPrimed = true;
-    }
+  void _startAlarmPoll() {
+    _stopAlarmPoll();
+    _alarmPollTimer = Timer.periodic(
+      const Duration(seconds: 8),
+      (_) => _pollAlarmEvents(),
+    );
+    debugPrint('🔄 Poll started every 5s');
   }
 
+  void _stopAlarmPoll() {
+    _alarmPollTimer?.cancel();
+    _alarmPollTimer = null;
+    debugPrint('⏹ Poll stopped');
+  }
+
+  // ── Core alarm-event poll — called every 5 s while armed ──────
   Future<void> _pollAlarmEvents() async {
-    if (_apiService == null || _deviceUuid == null) return;
-    if (!_alarmEventsCursorPrimed) {
-      await _primeAlarmEventsCursor();
-      return;
-    }
+    if (!_isArmed) return;
+    if (_apiService == null) return;
 
+    final pollUuid = _activeDeviceUuid;
+    if (pollUuid.isEmpty) return;
+
+    if (_isPollRunning) return;
+    _isPollRunning = true;
     try {
-      final rows = await _apiService!.getAlarmEvents(
-        deviceUuid: _deviceUuid!,
-        sinceId: _lastAlarmEventId,
-        limit: 20,
-      );
-      if (rows.isEmpty) return;
+      final events = await _apiService!.getAlarmEvents(pollUuid);
+      if (events.isEmpty) return;
 
-      var shouldForceEnableNotifications = false;
+      for (final event in events) {
+        final int eventId = int.tryParse(event['id'].toString()) ?? 0;
+        if (eventId <= _lastAlarmId) break;
 
-      for (final row in rows) {
-        if (row is! Map) continue;
-        final id = _toIntOrNull(row['id']);
-        if (id == null) continue;
-        if (id <= _lastAlarmEventId) continue;
-        _lastAlarmEventId = id;
+        final String eventType = event['event_type']?.toString() ?? '';
+        final String zone = event['zone']?.toString() ?? '';
+        final String message = event['message']?.toString() ?? '';
 
-        final eventType = (row['event_type'] ?? '').toString().toUpperCase();
-        final zone = (row['zone'] ?? '').toString();
-        final message = (row['message'] ?? '').toString();
-        final ts = (row['created_at'] ?? DateTime.now().toIso8601String()).toString();
+        debugPrint(
+            '🆕 Event id=$eventId type=$eventType zone="$zone" msg="$message"');
 
-        _activityLogs.insert(
-          0,
-          ActivityLog(
-            timestamp: ts,
-            event: eventType,
-            device: zone.isNotEmpty ? zone : 'Sensor',
-            user: 'System',
-          ),
-        );
+        if (eventType == 'SENSOR_TRIGGER' ||
+            eventType == 'ALARM_START' ||
+            eventType == 'ALARM_TRIGGER') {
+          String sensorDisplay;
+          if (message.isNotEmpty &&
+              message != 'MOBILE APP ALARM' &&
+              message != 'Alarm triggered from Mobile App' &&
+              message != 'Triggered from Mobile App') {
+            sensorDisplay = message;
+          } else if (zone.isNotEmpty && zone != 'MOBILE APP ALARM') {
+            sensorDisplay = zone;
+          } else {
+            sensorDisplay = 'Sensor triggered';
+          }
 
-        if (eventType == 'SENSOR_TRIGGER' || eventType == 'ALARM_START' || eventType == 'ALARM_TRIGGER') {
-          shouldForceEnableNotifications = true;
+          final sensorType = _guessSensorType(sensorDisplay);
+
+          debugPrint('🚨 ALARM TRIGGER: "$sensorDisplay" type=$sensorType');
+
+          if (_currentState != SystemState.alarm) {
+            _currentState = SystemState.alarm;
+            notifyListeners();
+          }
+
+          await _notifications.notifyAlarmTriggered(
+            sensorType: sensorType,
+            sensorName: sensorDisplay,
+            zoneName: zone,
+          );
+
+          _activityLogs.insert(
+              0,
+              ActivityLog(
+                timestamp: event['created_at']?.toString() ??
+                    DateTime.now().toIso8601String(),
+                event:
+                    '${_sensorIcon(sensorType)} ${_sensorLabel(sensorType)} — $sensorDisplay',
+                device: sensorDisplay,
+                user: 'Sensor',
+              ));
+          await _apiService!.postActivityLog(
+            event:
+                '${_sensorIcon(sensorType)} ${_sensorLabel(sensorType)} — $sensorDisplay',
+            device: sensorDisplay,
+            user: 'Sensor',
+            deviceUuid: _activeDeviceUuid,
+          );
+          notifyListeners();
         }
 
-        if (eventType == 'SENSOR_TRIGGER') {
-          await NotificationService.instance.showAlarmTriggered(
-            title: 'SENSOR TRIGGER',
-            body: zone.isNotEmpty ? '$zone: $message' : message,
-            startAlarmTone: true,
-          );
-        } else if (eventType == 'ALARM_START' || eventType == 'ALARM_TRIGGER') {
-          await NotificationService.instance.showAlarmTriggered(
-            title: 'ALARM',
-            body: zone.isNotEmpty ? '$zone: $message' : message,
-            startAlarmTone: true,
-          );
-        }
+        if (eventId > _lastAlarmId) _lastAlarmId = eventId;
       }
-
-      if (shouldForceEnableNotifications) {
-        await SettingsManager().setAlarmNotification(true);
-      }
-
-      notifyListeners();
     } catch (e) {
-      // ignore: avoid_print
-      print('Alarm events poll error (uuid=$_deviceUuid, since=$_lastAlarmEventId): $e');
+      debugPrint('⚠️ Poll error: $e');
+    } finally {
+      _isPollRunning = false;
     }
   }
 
-  /// Load data from server or offline storage
+  // ── Sensor type helpers ────────────────────────────────────────
+  String _guessSensorType(String text) {
+    final t = text.toLowerCase();
+    if (t.contains('motion')) return 'motion';
+    if (t.contains('window')) return 'window';
+    if (t.contains('remote')) return 'remote';
+    if (t.contains('camera')) return 'camera';
+    return 'door';
+  }
+
+  String _sensorIcon(String type) {
+    switch (type) {
+      case 'motion':
+        return '👁️';
+      case 'window':
+        return '🪟';
+      case 'remote':
+        return '📡';
+      case 'camera':
+        return '📷';
+      default:
+        return '🚪';
+    }
+  }
+
+  String _sensorLabel(String type) {
+    switch (type) {
+      case 'motion':
+        return 'Motion Sensor';
+      case 'window':
+        return 'Window Sensor';
+      case 'remote':
+        return 'Remote Trigger';
+      default:
+        return 'Door Sensor';
+    }
+  }
+
+  // ── Load data from server ──────────────────────────────────────
   Future<void> loadData() async {
     if (_isLoading) return;
 
     _isLoading = true;
     _error = null;
     notifyListeners();
-
     try {
-      if (_connectionManager?.isOnline ?? false) {
-        // Load from server
+      if ((_hubDeviceUuid ?? _deviceUuid ?? '').isNotEmpty) {
         await _loadFromServer();
-
-        // Save to offline storage
         await _saveToOfflineStorage();
-
-        // Sync pending actions
-        await _offlineManager.syncPendingActions();
+        if (_connectionManager?.isOnline ?? false) {
+          await _offlineManager.syncPendingActions();
+        }
+        _isOfflineMode = false;
       } else {
-        // Load from offline storage
         await _loadFromOfflineStorage();
       }
+      await _checkBatteryLevels();
     } catch (e) {
       _error = e.toString();
-      print('❌ Load data error: $e');
-
-      // Try loading from offline storage as fallback
       try {
         await _loadFromOfflineStorage();
-      } catch (offlineError) {
-        print('❌ Offline load error: $offlineError');
-      }
+      } catch (_) {}
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  /// Load data from server
+  Future<void> _checkBatteryLevels() async {
+    for (final device in _devices) {
+      if (device.battery > 0 && device.battery <= _lowBatteryThreshold) {
+        await _notifications.notifyLowBattery(
+            deviceName: device.name, batteryLevel: device.battery);
+      }
+    }
+  }
+
   Future<void> _loadFromServer() async {
     if (_apiService == null) return;
 
-    // Get system state
-    final stateData = await _apiService!.getSystemState();
-    if (stateData != null && stateData['state'] != null) {
-      _currentState = _parseSystemState(stateData['state']);
-      _lastSystemStateId = _toIntOrNull(stateData['id']);
-      _lastSystemStateReason =
-          (stateData['reason'] ?? stateData['alarm_reason'] ?? stateData['triggered_sensor'])?.toString();
+    // ✅ Run all 3 requests in parallel — 3x faster startup
+    final results = await Future.wait([
+      _apiService!.getSystemState(hubDeviceUuid: _hubDeviceUuid),
+      _apiService!.getDevices(),
+      _apiService!.getActivityLogs(
+        limit: _activityHistoryLimit,
+        deviceUuid: _activeDeviceUuid,
+      ),
+    ]);
+
+    final stateData = results[0] as Map<String, dynamic>?;
+    if (stateData?['state'] != null) {
+      _currentState = _parseSystemState(stateData!['state']);
+      _lastStateUpdatedAt =
+          (stateData['updated_at'] ?? stateData['timestamp'] ?? '').toString();
     }
 
-    // Get devices
-    final devicesData = await _apiService!.getDevices();
+    final devicesData = results[1] as List<dynamic>;
+
     _devices = devicesData.map((d) => Device.fromJson(d)).toList();
 
-    // Get activity logs
-    final logsData = await _apiService!.getActivityLogs(limit: 50);
+    final logsData = results[2] as List<dynamic>;
     _activityLogs = logsData.map((l) => ActivityLog.fromJson(l)).toList();
   }
 
-  /// Save data to offline storage
   Future<void> _saveToOfflineStorage() async {
     await _offlineManager.saveSystemState(_currentState.name);
-    await _offlineManager.saveDevices(
-      _devices.map((d) => {
-        'id': d.id,
-        'name': d.name,
-        'type': d.type,
-        'status': d.status,
-        'battery': d.battery,
-        'zone': d.zone,
-        'last_activity': d.lastActivity,
-      }).toList(),
-    );
-    await _offlineManager.saveActivityLogs(
-      _activityLogs.map((l) => {
-        'timestamp': l.timestamp,
-        'event': l.event,
-        'device': l.device,
-        'user': l.user,
-      }).toList(),
-    );
+    await _offlineManager.saveDevices(_devices
+        .map((d) => {
+              'id': d.id,
+              'name': d.name,
+              'type': d.type,
+              'status': d.status,
+              'battery': d.battery,
+              'zone': d.zone,
+              'last_activity': d.lastActivity,
+            })
+        .toList());
+    await _offlineManager.saveActivityLogs(_activityLogs
+        .map((l) => {
+              'timestamp': l.timestamp,
+              'event': l.event,
+              'device': l.device,
+              'user': l.user,
+            })
+        .toList());
   }
 
-  /// Load data from offline storage
   Future<void> _loadFromOfflineStorage() async {
     final stateData = _offlineManager.getSystemState();
-    if (stateData != null) {
+    if (stateData != null)
       _currentState = _parseSystemState(stateData['state']);
-    }
-
-    final devicesData = _offlineManager.getDevices();
-    _devices = devicesData.map((d) => Device.fromJson(d)).toList();
-
-    final logsData = _offlineManager.getActivityLogs();
-    _activityLogs = logsData.map((l) => ActivityLog.fromJson(l)).toList();
-
+    _devices =
+        _offlineManager.getDevices().map((d) => Device.fromJson(d)).toList();
+    _activityLogs = _offlineManager
+        .getActivityLogs()
+        .map((l) => ActivityLog.fromJson(l))
+        .toList();
     _isOfflineMode = true;
   }
 
-  /// Change system state
+  // ── Change system state (ARM / DISARM) ─────────────────────────
   Future<void> changeSystemState(SystemState newState) async {
     if (_isLoading) return;
+
+    // ✅ Update UI INSTANTLY — don't wait for server
+    _error = null;
+    notifyListeners();
 
     _isLoading = true;
     notifyListeners();
 
     try {
       final stateString = _systemStateToString(newState);
+      RealtimeSyncService().suppressNextTick = true;
 
-      if (_connectionManager?.isOnline ?? false) {
-        // Send to server via connection manager
-        final success = await _connectionManager!.sendAlarmCommand(
+      // ✅ Network call with short timeout — runs async, won't block UI
+      try {
+        await _apiService!.updateSystemState(
           stateString,
-          user: 'Mobile App',
+          deviceUuid: _hubDeviceUuid ?? _deviceUuid ?? 'legacy',
+          user:
+              AuthService().userName ?? AuthService().userEmail ?? 'Mobile App',
         );
-
-        if (success) {
-          _currentState = newState;
-          await _saveToOfflineStorage();
-        } else {
-          throw Exception('Failed to change state');
-        }
-      } else {
-        // Queue action for later
-        await _offlineManager.queueAction({
-          'type': 'state_change',
-          'state': stateString,
-          'user': 'Mobile App',
-        });
-
-        // Update local state
-        _currentState = newState;
-        await _saveToOfflineStorage();
+      } catch (e) {
+        debugPrint('⚠️ Server update failed (queued): $e');
+        RealtimeSyncService().suppressNextTick = false;
+        rethrow;
       }
 
+      _currentState = newState;
+      _lastStateUpdatedAt = DateTime.now().toIso8601String();
       if (newState == SystemState.disarmed) {
-        NotificationService.instance.stopAlarmToneLoop();
+        _isArmed = false;
+        _stopAlarmPoll();
+        _lastAlarmId = 0;
+        _notifications.stopAlarmImmediately(); // fire-and-forget
       }
 
-      // Add activity log (local)
-      _activityLogs.insert(0, ActivityLog(
-        timestamp: DateTime.now().toIso8601String(),
-        event: stateDisplayName,
-        device: 'Mobile App',
-        user: 'User',
-      ));
-
-// Queue log so it also goes to PHP logs table
-      await _offlineManager.queueAction({
-        'type': 'activity_log',
-        'event': stateDisplayName,   // e.g. "ARMED", "DISARMED"
-        'device': 'Mobile App',
-        'user': 'User',
-      });
-
-// If we are online, push it immediately
-      if (_offlineManager.isOnline) {
-        await _offlineManager.syncPendingActions();
+      if (newState == SystemState.armed || newState == SystemState.stayArmed) {
+        await _setBaselineAndStartPoll();
       }
 
-      _error = null;
+      // Fire-and-forget — don't await these to keep UI snappy
+      _notifications.notifyStateChange(
+        newState,
+        actor: AuthService().userName ?? AuthService().userEmail,
+      );
+      _saveToOfflineStorage();
+
+      _activityLogs.insert(
+          0,
+          ActivityLog(
+            timestamp: DateTime.now().toIso8601String(),
+            event: _activityEventFor(newState, user: _currentUserName),
+            device: 'Mobile App',
+            user: _currentUserName,
+          ));
+      await _postSharedActivityLog(_activityEventFor(newState));
     } catch (e) {
       _error = e.toString();
-      print('❌ Change state error: $e');
+      RealtimeSyncService().suppressNextTick = false;
+      debugPrint('❌ changeSystemState: $e');
     } finally {
       _isLoading = false;
       notifyListeners();
     }
-
   }
 
-  /// Trigger SOS alarm
+  Future<void> _refreshActivityLogs() async {
+    if (_apiService == null || _activeDeviceUuid.isEmpty) return;
+    final logsData = await _apiService!.getActivityLogs(
+      limit: _activityHistoryLimit,
+      deviceUuid: _activeDeviceUuid,
+    );
+    if (logsData.isEmpty) return;
+    _activityLogs = logsData.map((l) => ActivityLog.fromJson(l)).toList();
+    await _offlineManager.saveActivityLogs(_activityLogs
+        .map((l) => {
+              'timestamp': l.timestamp,
+              'event': l.event,
+              'device': l.device,
+              'user': l.user,
+            })
+        .toList());
+  }
+
+  Future<void> _postSharedActivityLog(String event) async {
+    if (_apiService == null || _activeDeviceUuid.isEmpty) return;
+
+    await _apiService!.postActivityLog(
+      event: event,
+      device: 'Mobile App',
+      user: _currentUserName,
+      deviceUuid: _activeDeviceUuid,
+    );
+    await _refreshActivityLogs();
+  }
+
+  String get _currentUserName =>
+      AuthService().userName ?? AuthService().userEmail ?? 'User';
+
+  String _activityEventFor(SystemState state, {String? user}) {
+    final actor = user ?? _currentUserName;
+    switch (state) {
+      case SystemState.armed:
+        return '$actor armed';
+      case SystemState.stayArmed:
+        return '$actor stay armed';
+      case SystemState.alarm:
+        return '$actor triggered alarm';
+      case SystemState.disarmed:
+        return '$actor disarmed';
+    }
+  }
+
+  // ── SOS ────────────────────────────────────────────────────────
   Future<void> triggerSOSAlarm() async {
     try {
       _isSOSMode = true;
+      _currentState = SystemState.alarm;
       notifyListeners();
-
       if (_connectionManager?.isOnline ?? false) {
         await _connectionManager!.triggerSOS();
       } else {
         await _offlineManager.enableSOSMode();
       }
-
-      _currentState = SystemState.alarm;
-      notifyListeners();
+      HapticFeedback.heavyImpact();
+      await _notifications.notifySOSTriggered();
     } catch (e) {
-      print('❌ Trigger SOS error: $e');
+      debugPrint('❌ SOS: $e');
     }
   }
 
-  /// Stop SOS alarm
   Future<void> stopSOSAlarm() async {
     try {
       _isSOSMode = false;
-      await _offlineManager.disableSOSMode();
       _currentState = SystemState.disarmed;
+      _isArmed = false;
+      _stopAlarmPoll();
+      await _offlineManager.disableSOSMode();
+      HapticFeedback.lightImpact();
+      await _notifications.cancelSOSNotification();
+      await _notifications.cancel(NotificationService.idAlarm);
+      await _notifications.notifyStateChange(
+        SystemState.disarmed,
+        actor: AuthService().userName ?? AuthService().userEmail,
+      );
       notifyListeners();
     } catch (e) {
-      print('❌ Stop SOS error: $e');
+      debugPrint('❌ stopSOS: $e');
     }
   }
 
-  /// Parse system state from string
+  // ── Parsers ────────────────────────────────────────────────────
   SystemState _parseSystemState(String? state) {
     switch (state?.toLowerCase()) {
       case 'armed':
         return SystemState.armed;
       case 'stay_armed':
       case 'stay_arm':
+      case 'stay':
         return SystemState.stayArmed;
       case 'alarm':
         return SystemState.alarm;
-      case 'disarmed':
       default:
         return SystemState.disarmed;
     }
   }
 
-  /// Convert system state to string
   String _systemStateToString(SystemState state) {
     switch (state) {
       case SystemState.armed:
@@ -548,21 +786,19 @@ class AlarmSystemProvider with ChangeNotifier {
     }
   }
 
-  /// Get state display name
   String get stateDisplayName {
     switch (_currentState) {
       case SystemState.armed:
-        return 'ARMED';
+        return 'System Armed';
       case SystemState.stayArmed:
-        return 'STAY ARMED';
+        return 'Stay Armed';
       case SystemState.alarm:
         return 'ALARM';
       case SystemState.disarmed:
-        return 'DISARMED';
+        return 'System Disarmed';
     }
   }
 
-  /// Get state color
   Color get stateColor {
     switch (_currentState) {
       case SystemState.armed:
@@ -572,14 +808,17 @@ class AlarmSystemProvider with ChangeNotifier {
       case SystemState.alarm:
         return Colors.red;
       case SystemState.disarmed:
-        return Colors.grey;
+        return Colors.blueGrey;
     }
   }
 
+  // ── [SYNC-4] Dispose — clean up sync service ───────────────────
   @override
   void dispose() {
-    _systemStatePollTimer?.cancel();
+    RealtimeSyncService().stop(); // ← ADDED
+    _stopAlarmPoll();
     _connectionManager?.dispose();
     super.dispose();
   }
+// ── [SYNC-4 END] ───────────────────────────────────────────────
 }

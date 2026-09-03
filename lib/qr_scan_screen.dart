@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-//import 'package:qr_code_scanner/qr_code_scanner.dart';
-import 'dart:io';
-import 'bluetooth_device_picker_screen.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'bluetooth_device_picker_screen.dart';
+
 class QRScanScreen extends StatefulWidget {
   @override
   _QRScanScreenState createState() => _QRScanScreenState();
@@ -211,7 +210,7 @@ class _QRScanScreenState extends State<QRScanScreen> {
 
         // Navigate to Bluetooth device picker after short delay
         Future.delayed(Duration(milliseconds: 1500), () {
-          if (mounted && !isScanned) return;
+          if (!mounted) return; // widget was disposed — abort navigation
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
