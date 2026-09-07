@@ -208,6 +208,14 @@ class ApiRouter {
                     }
                     break;
 
+                case 'firmware_factory_reset':
+                    if ($this->requestMethod === 'POST') {
+                        $this->firmwareFactoryReset();
+                    } else {
+                        $this->sendResponse(['error' => 'Method not allowed'], 405);
+                    }
+                    break;
+
                 case 'device_info':
                     if ($this->requestMethod === 'GET') {
                         $this->deviceGetInfo();
@@ -742,34 +750,370 @@ private function deleteDevice()
 {
     try {
         $data = $this->getInput();
-        $deviceUuid = $data['device_uuid'] ?? null;  // Changed from deviceuuid
+        $deviceUuid = trim($data['device_uuid'] ?? '');
+        $macAddress = trim($data['mac_address'] ?? $deviceUuid);
 
-        if (empty($deviceUuid)) {
+        if ($deviceUuid === '') {
             throw new Exception('Device UUID is required');
         }
 
         // ✅ FIXED: Use correct table name (device_registry)
-        $result = $this->db->query(
-            'DELETE FROM device_registry WHERE device_uuid = ?',
-            [$deviceUuid]
-        );
+        $deviceAliases = $this->uniqueNonEmptyValues([
+            $deviceUuid,
+            $macAddress,
+            $data['hub_language'] ?? '',
+        ]);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
+        $deviceAliases = $this->expandAliasesFromDeviceRows($deviceAliases, $deviceRows);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
 
-        if ($result->rowCount() > 0) {
-            $this->sendResponse([
-                'success' => true,
-                'message' => 'Device deleted successfully',
-            ]);
-        } else {
+        if (!$deviceRows) {
             $this->sendResponse([
                 'success' => false,
                 'message' => 'No device found with that UUID',
             ], 404);
+            return;
         }
+
+        $deleted = [];
+
+        $this->db->beginTransaction();
+        $deviceIds = $this->cleanupDeviceRows($deviceRows, $deviceAliases, $deleted);
+        $this->db->commit();
+
+        $this->sendResponse([
+            'success' => true,
+            'message' => 'Device deleted for all admins/users',
+            'device_uuid' => $deviceUuid,
+            'device_ids' => $deviceIds,
+            'aliases' => $deviceAliases,
+            'deleted' => $deleted,
+        ]);
     } catch (Exception $e) {
+        try {
+            $this->db->rollBack();
+        } catch (Exception $ignored) {}
         error_log('Delete device error: ' . $e->getMessage());
         $this->sendResponse(['success' => false, 'error' => $e->getMessage()], 500);
     }
 }
+
+private function tableExists($tableName)
+{
+    try {
+        $row = $this->db->fetchOne("SHOW TABLES LIKE ?", [$tableName]);
+        return (bool)$row;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+private function tableHasColumn($tableName, $columnName)
+{
+    try {
+        $row = $this->db->fetchOne(
+            "SELECT COLUMN_NAME
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = ?
+               AND COLUMN_NAME = ?
+             LIMIT 1",
+            [$tableName, $columnName]
+        );
+        return (bool)$row;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+private function safeDeleteBySql($tableName, $sql, $params, &$deleted)
+{
+    if (!$this->tableExists($tableName)) {
+        return;
+    }
+    try {
+        $stmt = $this->db->query($sql, $params);
+        $deleted[$tableName] = ($deleted[$tableName] ?? 0) + $stmt->rowCount();
+    } catch (Exception $e) {
+        error_log("Factory reset cleanup skipped $tableName: " . $e->getMessage());
+    }
+}
+
+private function uniqueNonEmptyValues($values)
+{
+    $out = [];
+    foreach ($values as $value) {
+        $value = trim((string)$value);
+        if ($value !== '' && !in_array($value, $out, true)) {
+            $out[] = $value;
+        }
+        foreach ($this->macAliasVariants($value) as $alias) {
+            if ($alias !== '' && !in_array($alias, $out, true)) {
+                $out[] = $alias;
+            }
+        }
+    }
+    return $out;
+}
+
+private function macAliasVariants($value)
+{
+    $hex = strtoupper(preg_replace('/[^0-9A-F]/', '', (string)$value));
+    if (strlen($hex) !== 12) {
+        return [];
+    }
+
+    $bytes = str_split($hex, 2);
+    $last = hexdec($bytes[5]);
+    $aliases = [];
+    foreach ([0, 2, -2, 1, -1] as $delta) {
+        $copy = $bytes;
+        $copy[5] = sprintf('%02X', ($last + $delta) & 0xFF);
+        $aliases[] = implode(':', $copy);
+    }
+    return array_values(array_unique($aliases));
+}
+
+private function sqlPlaceholders($count)
+{
+    return implode(',', array_fill(0, max(1, (int)$count), '?'));
+}
+
+private function safeDeleteByColumnValues($tableName, $columnName, $values, &$deleted)
+{
+    $values = $this->uniqueNonEmptyValues($values);
+    if (!$values || !$this->tableExists($tableName) || !$this->tableHasColumn($tableName, $columnName)) {
+        return;
+    }
+    $placeholders = $this->sqlPlaceholders(count($values));
+    $this->safeDeleteBySql(
+        $tableName,
+        "DELETE FROM {$tableName} WHERE {$columnName} IN ({$placeholders})",
+        $values,
+        $deleted
+    );
+}
+
+private function cleanupDeviceLinkTable($tableName, $deviceId, $deviceAliases, &$deleted)
+{
+    if (!$this->tableExists($tableName)) {
+        return;
+    }
+    if ($this->tableHasColumn($tableName, 'device_id')) {
+        $this->safeDeleteBySql($tableName, "DELETE FROM {$tableName} WHERE device_id = ?", [$deviceId], $deleted);
+    }
+    if ($this->tableHasColumn($tableName, 'hub_device_id')) {
+        $this->safeDeleteBySql($tableName, "DELETE FROM {$tableName} WHERE hub_device_id = ?", [$deviceId], $deleted);
+    }
+    foreach (['device_uuid', 'hub_device_uuid', 'hub_uuid', 'mac_address', 'ble_service_uuid'] as $columnName) {
+        $this->safeDeleteByColumnValues($tableName, $columnName, $deviceAliases, $deleted);
+    }
+}
+
+private function findDeviceRowsByAliases($deviceAliases)
+{
+    $deviceAliases = $this->uniqueNonEmptyValues($deviceAliases);
+    if (!$deviceAliases || !$this->tableExists('device_registry')) {
+        return [];
+    }
+
+    $placeholders = $this->sqlPlaceholders(count($deviceAliases));
+    $columns = [];
+    foreach (['device_uuid', 'mac_address', 'ble_service_uuid'] as $columnName) {
+        if ($this->tableHasColumn('device_registry', $columnName)) {
+            $columns[] = "{$columnName} IN ({$placeholders})";
+        }
+    }
+    if (!$columns) {
+        return [];
+    }
+
+    $params = [];
+    foreach ($columns as $ignored) {
+        $params = array_merge($params, $deviceAliases);
+    }
+
+    return $this->db->fetchAll(
+        'SELECT id, device_uuid, mac_address, ble_service_uuid FROM device_registry WHERE ' . implode(' OR ', $columns),
+        $params
+    );
+}
+
+private function expandAliasesFromDeviceRows($deviceAliases, $deviceRows)
+{
+    foreach ($deviceRows as $device) {
+        $deviceAliases[] = $device['device_uuid'] ?? '';
+        $deviceAliases[] = $device['mac_address'] ?? '';
+        $deviceAliases[] = $device['ble_service_uuid'] ?? '';
+    }
+    return $this->uniqueNonEmptyValues($deviceAliases);
+}
+
+private function findActiveDeviceRowByAliases($deviceAliases)
+{
+    $deviceAliases = $this->uniqueNonEmptyValues($deviceAliases);
+    if (!$deviceAliases || !$this->tableExists('device_registry')) {
+        return null;
+    }
+
+    $placeholders = $this->sqlPlaceholders(count($deviceAliases));
+    $columns = [];
+    foreach (['device_uuid', 'mac_address', 'ble_service_uuid'] as $columnName) {
+        if ($this->tableHasColumn('device_registry', $columnName)) {
+            $columns[] = "{$columnName} IN ({$placeholders})";
+        }
+    }
+    if (!$columns) {
+        return null;
+    }
+
+    $params = [];
+    foreach ($columns as $ignored) {
+        $params = array_merge($params, $deviceAliases);
+    }
+
+    return $this->db->fetchOne(
+        'SELECT id, device_uuid, mac_address, ble_service_uuid FROM device_registry WHERE is_active = 1 AND (' . implode(' OR ', $columns) . ') ORDER BY id ASC LIMIT 1',
+        $params
+    );
+}
+
+private function cleanupDeviceRows($deviceRows, $deviceAliases, &$deleted)
+{
+    $deviceIds = [];
+    foreach ($deviceRows as $device) {
+        $deviceId = (int)$device['id'];
+        if ($deviceId <= 0 || in_array($deviceId, $deviceIds, true)) {
+            continue;
+        }
+        $deviceIds[] = $deviceId;
+
+        $this->cleanupDeviceLinkTable('user_devices', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('device_users', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('user_device_links', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('device_shares', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('shared_devices', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('favorite_devices', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('favourite_devices', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('device_admins', $deviceId, $deviceAliases, $deleted);
+        $this->cleanupDeviceLinkTable('admin_devices', $deviceId, $deviceAliases, $deleted);
+        $this->safeDeleteBySql('device_relationships', 'DELETE FROM device_relationships WHERE parent_device_id = ? OR child_device_id = ?', [$deviceId, $deviceId], $deleted);
+        $this->safeDeleteBySql('paired_accessories', 'DELETE FROM paired_accessories WHERE hub_device_id = ?', [$deviceId], $deleted);
+        $this->safeDeleteBySql('contact_numbers', 'DELETE FROM contact_numbers WHERE device_id = ?', [$deviceId], $deleted);
+        $this->safeDeleteBySql('alarm_schedules', 'DELETE FROM alarm_schedules WHERE device_id = ?', [$deviceId], $deleted);
+        $this->safeDeleteBySql('device_settings', 'DELETE FROM device_settings WHERE device_id = ?', [$deviceId], $deleted);
+        $this->safeDeleteBySql('device_settings_v2', 'DELETE FROM device_settings_v2 WHERE device_id = ?', [$deviceId], $deleted);
+        $this->safeDeleteBySql('settings_sync_log', 'DELETE FROM settings_sync_log WHERE device_id = ?', [$deviceId], $deleted);
+    }
+
+    foreach (['settings_sync_log', 'system_state', 'alarm_events', 'device_wifi', 'push_tokens', 'notification_tokens'] as $tableName) {
+        $this->safeDeleteByColumnValues($tableName, 'device_uuid', $deviceAliases, $deleted);
+        $this->safeDeleteByColumnValues($tableName, 'hub_device_uuid', $deviceAliases, $deleted);
+        $this->safeDeleteByColumnValues($tableName, 'mac_address', $deviceAliases, $deleted);
+    }
+
+    foreach (['mobile_devices', 'mobiledevices'] as $tableName) {
+        $this->safeDeleteByColumnValues($tableName, 'device_uuid', $deviceAliases, $deleted);
+        $this->safeDeleteByColumnValues($tableName, 'deviceuuid', $deviceAliases, $deleted);
+        $this->safeDeleteByColumnValues($tableName, 'mac_address', $deviceAliases, $deleted);
+        $this->safeDeleteByColumnValues($tableName, 'macaddress', $deviceAliases, $deleted);
+    }
+
+    if ($deviceIds) {
+        $placeholders = $this->sqlPlaceholders(count($deviceIds));
+        $this->safeDeleteBySql('device_registry', "DELETE FROM device_registry WHERE id IN ({$placeholders})", $deviceIds, $deleted);
+    }
+
+    return $deviceIds;
+}
+
+private function isTrustedDeviceStateActor($actor)
+{
+    $actor = strtoupper(trim((string)$actor));
+    if ($actor === '') {
+        return false;
+    }
+    foreach (['HUB', 'BOOT', 'RF', 'REMOTE', 'SCHEDULE', 'SYSTEM', 'ESP32'] as $prefix) {
+        if (strpos($actor, $prefix) === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+private function userHasDeviceAccess($userId, $deviceAliases)
+{
+    $userId = (int)$userId;
+    $deviceAliases = $this->uniqueNonEmptyValues($deviceAliases);
+    if ($userId <= 0 || !$deviceAliases || !$this->tableExists('user_devices')) {
+        return false;
+    }
+
+    $placeholders = $this->sqlPlaceholders(count($deviceAliases));
+    $row = $this->db->fetchOne(
+        "SELECT id FROM user_devices
+         WHERE user_id = ? AND device_uuid IN ({$placeholders})
+         LIMIT 1",
+        array_merge([$userId], $deviceAliases)
+    );
+    return (bool)$row;
+}
+
+private function firmwareFactoryReset()
+{
+    try {
+        $data = $this->getInput();
+        $deviceUuid = trim($data['device_uuid'] ?? ($data['mac_address'] ?? ''));
+        $macAddress = trim($data['mac_address'] ?? $deviceUuid);
+
+        if ($deviceUuid === '' && $macAddress === '') {
+            $this->sendResponse(['success' => false, 'error' => 'device_uuid or mac_address is required'], 400);
+            return;
+        }
+
+        $deviceAliases = $this->uniqueNonEmptyValues([
+            $deviceUuid,
+            $macAddress,
+            $data['hub_language'] ?? '',
+        ]);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
+        $deviceAliases = $this->expandAliasesFromDeviceRows($deviceAliases, $deviceRows);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
+
+        if (!$deviceRows) {
+            $this->sendResponse([
+                'success' => true,
+                'message' => 'Device already clean on server',
+                'device_uuid' => $deviceUuid,
+                'deleted' => []
+            ]);
+            return;
+        }
+
+        $deleted = [];
+
+        $this->db->beginTransaction();
+        $deviceIds = $this->cleanupDeviceRows($deviceRows, $deviceAliases, $deleted);
+        $this->db->commit();
+        $this->logActivity('Firmware Factory Reset', $deviceUuid, 'ESP32');
+
+        $this->sendResponse([
+            'success' => true,
+            'message' => 'Device users/admins/accessories/settings removed',
+            'device_uuid' => $deviceUuid,
+            'device_ids' => $deviceIds,
+            'aliases' => $deviceAliases,
+            'deleted' => $deleted
+        ]);
+    } catch (Exception $e) {
+        try {
+            $this->db->rollBack();
+        } catch (Exception $ignored) {}
+        error_log('firmwareFactoryReset error: ' . $e->getMessage());
+        $this->sendResponse(['success' => false, 'error' => $e->getMessage()], 500);
+    }
+}
+
     /**
      * Get full device information
      * GET ?action=device_info&device_uuid=xxx
@@ -1189,8 +1533,8 @@ if (!$syncRow || empty($syncRow['settings_json'])) {
         // These match exactly the keys the ESP32 firmware reads,
         // and the keys Flutter's saveSettings() posts.
         $defaults = [
-            'exit_delay'                      => 70,
-            'entry_delay'                     => 60,
+            'exit_delay'                      => 0,
+            'entry_delay'                     => 0,
             'alarm_duration'                  => 5,
             'alarm_sound'                     => true,
             'alarm_call'                      => true,
@@ -1645,11 +1989,45 @@ private function saveSettings() {
         if (empty($device_uuid)) {
             throw new Exception('device_uuid is required');
         }
+
+        $deviceAliases = $this->uniqueNonEmptyValues([$device_uuid]);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
+        if (!$deviceRows) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'Device not registered or removed',
+                'device_uuid' => $device_uuid
+            ], 404);
+            return;
+        }
+        $deviceAliases = $this->expandAliasesFromDeviceRows($deviceAliases, $deviceRows);
+        $userId = (int)($_GET['user_id'] ?? 0);
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $isEsp32Poll = stripos($userAgent, 'MONSOW-ESP32') !== false ||
+            strtolower(trim($_GET['source'] ?? '')) === 'hub';
+        if ($userId > 0 && !$this->userHasDeviceAccess($userId, $deviceAliases)) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User no longer has access to this device',
+                'device_uuid' => $device_uuid
+            ], 403);
+            return;
+        }
+        if ($userId <= 0 && !$isEsp32Poll) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User login required for alarm status',
+                'device_uuid' => $device_uuid
+            ], 403);
+            return;
+        }
  
         // ── Get current system state ──────────────────────────
         $state = $this->db->fetchOne(
             "SELECT state FROM system_state
-             ORDER BY updated_at DESC LIMIT 1"
+             WHERE device_uuid IN (" . $this->sqlPlaceholders(count($deviceAliases)) . ")
+             ORDER BY updated_at DESC LIMIT 1",
+            $deviceAliases
         );
  
         $currentState = $state['state'] ?? 'disarmed';
@@ -1661,6 +2039,32 @@ private function saveSettings() {
         $triggeredSensors = [];
  
         if ($alarmActive) {
+            $eventRows = $this->db->fetchAll(
+                "SELECT id, event_type, zone, message, created_at
+                 FROM alarm_events
+                 WHERE device_uuid IN (" . $this->sqlPlaceholders(count($deviceAliases)) . ")
+                   AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
+                   AND event_type IN ('SENSOR_TRIGGER', 'ALARM_START', 'ALARM_TRIGGER')
+                 ORDER BY id DESC
+                 LIMIT 5",
+                $deviceAliases
+            );
+
+            foreach ($eventRows as $row) {
+                $name = trim((string)($row['message'] ?? ''));
+                $zone = trim((string)($row['zone'] ?? ''));
+                if ($name === '' || strtolower($name) === 'mobile app alarm') {
+                    $name = $zone !== '' ? $zone : 'Sensor';
+                }
+                $type = $this->_guessSensorType('sensor', $name, (string)($row['event_type'] ?? ''));
+                $triggeredSensors[] = [
+                    'id'   => 'event_' . (string)$row['id'],
+                    'name' => $name,
+                    'type' => $type,
+                    'zone' => $zone,
+                ];
+            }
+
             $rows = $this->db->fetchAll(
                 "SELECT 
                      al.id,
@@ -2420,25 +2824,45 @@ if (!$device) {
             $device_uuid = 'default';
         }
 
-        // Build sibling UUIDs (ESP32 BLE MAC / WiFi MAC can differ by a small offset).
-        $siblings = [$device_uuid];
-        if (preg_match('/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/', $device_uuid)) {
-            $parts = explode(':', strtoupper($device_uuid));
-            $last = hexdec($parts[5]);
-            foreach ([-2, -1, 1, 2] as $delta) {
-                $parts[5] = sprintf('%02X', ($last + $delta) & 0xFF);
-                $siblings[] = implode(':', $parts);
-            }
+        $deviceAliases = $this->uniqueNonEmptyValues([$device_uuid]);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
+        if (!$deviceRows) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'Device not registered or removed',
+                'device_uuid' => $device_uuid
+            ], 404);
+            return;
         }
-        $siblings = array_values(array_unique($siblings));
+        $deviceAliases = $this->expandAliasesFromDeviceRows($deviceAliases, $deviceRows);
 
-        // Fetch the most recent state row for THIS device (or its siblings).
-        $placeholders = implode(',', array_fill(0, count($siblings), '?'));
+        $userId = (int)($_GET['user_id'] ?? ($input['user_id'] ?? 0));
+        $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $isEsp32Poll = stripos($userAgent, 'MONSOW-ESP32') !== false ||
+            strtolower(trim($_GET['source'] ?? ($input['source'] ?? ''))) === 'hub';
+        if ($userId > 0 && !$this->userHasDeviceAccess($userId, $deviceAliases)) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User no longer has access to this device',
+                'device_uuid' => $device_uuid
+            ], 403);
+            return;
+        }
+        if ($userId <= 0 && !$isEsp32Poll) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User login required for device state',
+                'device_uuid' => $device_uuid
+            ], 403);
+            return;
+        }
+
+        // Fetch the most recent state row for this physical device across WiFi/BLE MAC aliases.
         $state = $this->db->fetchOne(
             "SELECT * FROM system_state
-             WHERE device_uuid IN ($placeholders)
+             WHERE device_uuid IN (" . $this->sqlPlaceholders(count($deviceAliases)) . ")
              ORDER BY id DESC LIMIT 1",
-            $siblings
+            $deviceAliases
         );
 
         if (!$state) {
@@ -2451,8 +2875,10 @@ if (!$device) {
             ];
             $this->db->insert('system_state', $defaultState);
             $state = $this->db->fetchOne(
-                "SELECT * FROM system_state WHERE device_uuid = ? ORDER BY id DESC LIMIT 1",
-                [$device_uuid]
+                "SELECT * FROM system_state
+                 WHERE device_uuid IN (" . $this->sqlPlaceholders(count($deviceAliases)) . ")
+                 ORDER BY id DESC LIMIT 1",
+                $deviceAliases
             ) ?: $defaultState;
         }
 
@@ -2538,10 +2964,43 @@ if (!$device) {
             $device_uuid = 'default';
         }
 
-        // Fetch previous state for THIS device only.
+        $deviceAliases = $this->uniqueNonEmptyValues([$device_uuid]);
+        $deviceRows = $this->findDeviceRowsByAliases($deviceAliases);
+        if (!$deviceRows) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'Device not registered or removed',
+                'device_uuid' => $device_uuid
+            ], 404);
+            return;
+        }
+        $deviceAliases = $this->expandAliasesFromDeviceRows($deviceAliases, $deviceRows);
+
+        $actor = $input['user'] ?? 'api';
+        $userId = isset($input['user_id']) ? (int)$input['user_id'] : 0;
+        if ($userId <= 0 && !$this->isTrustedDeviceStateActor($actor)) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User login required for app arm/disarm',
+                'device_uuid' => $device_uuid
+            ], 403);
+            return;
+        }
+        if ($userId > 0 && !$this->userHasDeviceAccess($userId, $deviceAliases)) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User no longer has access to this device',
+                'device_uuid' => $device_uuid
+            ], 403);
+            return;
+        }
+
+        // Fetch previous state for this physical device across WiFi/BLE MAC aliases.
         $prev = $this->db->fetchOne(
-            "SELECT state FROM system_state WHERE device_uuid = ? ORDER BY id DESC LIMIT 1",
-            [$device_uuid]
+            "SELECT state FROM system_state
+             WHERE device_uuid IN (" . $this->sqlPlaceholders(count($deviceAliases)) . ")
+             ORDER BY id DESC LIMIT 1",
+            $deviceAliases
         );
 
         $reason = null;
@@ -2561,23 +3020,11 @@ if (!$device) {
             'state' => $input['state'],
             'previous_state' => $prev['state'] ?? null,
             'updated_at' => date('Y-m-d H:i:s'),
-            'updated_by' => $input['user'] ?? 'api',
+            'updated_by' => $actor,
             'reason' => $reason,
         ];
 
         $this->db->insert('system_state', $stateData);
-
-        // Also write for sibling UUIDs (BLE/WiFi MAC offset +/- 2)
-        if (preg_match('/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/', $device_uuid)) {
-            $parts = explode(':', strtoupper($device_uuid));
-            $last = hexdec($parts[5]);
-            foreach ([-2, -1, 1, 2] as $delta) {
-                $parts[5] = sprintf('%02X', ($last + $delta) & 0xFF);
-                $siblingData = $stateData;
-                $siblingData['device_uuid'] = implode(':', $parts);
-                $this->db->insert('system_state', $siblingData);
-            }
-        }
 
         // Insert an event row for app polling (non-breaking).
         $this->db->insert('alarm_events', [
@@ -2592,6 +3039,43 @@ if (!$device) {
     }
 
     private function getDevices() {
+        $userId = (int)($_GET['user_id'] ?? 0);
+        if ($userId > 0 && $this->tableExists('user_devices')) {
+            $devices = $this->db->fetchAll(
+                "SELECT 
+                    dr.id,
+                    dr.device_name AS name,
+                    dr.device_type AS type,
+                    dr.status,
+                    COALESCE(dr.battery_level, 0) AS battery,
+                    COALESCE(dr.zone_name, '') AS zone,
+                    dr.last_seen_at AS last_activity,
+                    dr.registered_at AS created_at,
+                    dr.device_uuid,
+                    dr.connection_type,
+                    ud.role,
+                    ud.shared_by
+                 FROM user_devices ud
+                 JOIN device_registry dr
+                   ON dr.device_uuid = ud.device_uuid
+                      OR dr.mac_address = ud.device_uuid
+                      OR dr.ble_service_uuid = ud.device_uuid
+                 WHERE ud.user_id = ? AND dr.is_active = TRUE
+                 ORDER BY dr.device_name",
+                [$userId]
+            );
+            $this->sendResponse(['devices' => $devices]);
+            return;
+        }
+
+        if ($userId <= 0) {
+            $this->sendResponse([
+                'success' => false,
+                'error' => 'User login required for device list'
+            ], 403);
+            return;
+        }
+
         $devices = $this->db->fetchAll(
             "SELECT 
                 id,
@@ -2945,16 +3429,10 @@ private function accessoryPair() {
         $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
         // ── Find hub ────────────────────────────────────────────
-        $hub = $this->db->fetchOne(
-    "SELECT id FROM device_registry
-     WHERE (device_uuid = ? OR ble_service_uuid = ?)
-       AND is_active = 1
-     LIMIT 1",
-    [$hubuuid, $hubuuid]
-);
-if (!$hub) {
-    throw new Exception('Hub device not found in device_registry');
-}
+        $hub = $this->findActiveDeviceRowByAliases([$hubuuid]);
+        if (!$hub) {
+            throw new Exception('Hub device not found in device_registry');
+        }
         $hubid = $hub['id'];
         $now   = date('Y-m-d H:i:s');
 
@@ -3037,16 +3515,10 @@ if (!$hub) {
                 throw new Exception('hub_device_uuid is required');
             }
  
-            $hub = $this->db->fetchOne(
-    "SELECT id FROM device_registry
-     WHERE (device_uuid = ? OR ble_service_uuid = ?)
-       AND is_active = 1
-     LIMIT 1",
-    [$hub_uuid, $hub_uuid]
-);
-if (!$hub) {
-    throw new Exception('Hub device not found');
-}
+            $hub = $this->findActiveDeviceRowByAliases([$hub_uuid]);
+            if (!$hub) {
+                throw new Exception('Hub device not found');
+            }
             $sql    = "SELECT * FROM paired_accessories WHERE hub_device_id = ? AND is_active = 1";
             $params = [$hub['id']];
  
@@ -3110,16 +3582,9 @@ private function getPairingRequest() {
         }
         $search = $device_uuid !== '' ? $device_uuid : $hub_uuid;
 
-// Search by device_uuid OR ble_service_uuid so ESP32's WiFi UUID
-// finds the same record as Flutter's BLE MAC
-$hub = $this->db->fetchOne(
-    "SELECT id, device_uuid
-     FROM device_registry
-     WHERE (device_uuid = ? OR ble_service_uuid = ?)
-       AND is_active = 1
-     LIMIT 1",
-    [$search, $search]
-);
+        // Search by device_uuid / mac_address / ble_service_uuid plus nearby MAC aliases,
+        // so ESP32 WiFi MAC and Flutter BLE MAC land on the same hub row.
+        $hub = $this->findActiveDeviceRowByAliases([$search]);
         
         if (!$hub) {
             $this->sendResponse(['has_request' => false, 'message' => 'Hub not found']);
@@ -3183,12 +3648,14 @@ private function updatePairingStatus() {
 
         if ($pairing_id > 0) {
             $existing = $this->db->fetchOne(
-                "SELECT id, accessory_uuid FROM paired_accessories WHERE id = ?",
+                "SELECT id, accessory_uuid, hub_device_id, accessory_name, accessory_type, zone_name, remote_mode
+                 FROM paired_accessories WHERE id = ?",
                 [$pairing_id]
             );
         } else {
             $existing = $this->db->fetchOne(
-                "SELECT id, accessory_uuid FROM paired_accessories WHERE accessory_uuid = ?",
+                "SELECT id, accessory_uuid, hub_device_id, accessory_name, accessory_type, zone_name, remote_mode
+                 FROM paired_accessories WHERE accessory_uuid = ?",
                 [$new_uuid]
             );
         }
@@ -3198,6 +3665,57 @@ private function updatePairingStatus() {
         }
 
         $pairing_id = (int)$existing['id'];
+
+        if (!empty($new_uuid) && !str_starts_with($new_uuid, 'pairing_')) {
+            $duplicate = $this->db->fetchOne(
+                "SELECT id FROM paired_accessories WHERE accessory_uuid = ? AND id <> ? LIMIT 1",
+                [$new_uuid, $pairing_id]
+            );
+
+            if ($duplicate) {
+                $now = date('Y-m-d H:i:s');
+
+                $this->db->query(
+                    "UPDATE paired_accessories
+                     SET hub_device_id = ?, accessory_name = ?, accessory_type = ?, zone_name = ?,
+                         remote_mode = ?, status = ?, is_active = 1, last_seen_at = ?
+                     WHERE id = ?",
+                    [
+                        $existing['hub_device_id'],
+                        $existing['accessory_name'],
+                        $existing['accessory_type'],
+                        $existing['zone_name'],
+                        $existing['remote_mode'],
+                        $status,
+                        $now,
+                        (int)$duplicate['id']
+                    ]
+                );
+
+                if (!empty($ble_name)) {
+                    $this->db->query(
+                        "UPDATE paired_accessories SET device_ble_name = ? WHERE id = ?",
+                        [$ble_name, (int)$duplicate['id']]
+                    );
+                }
+
+                $this->db->query(
+                    "UPDATE paired_accessories
+                     SET status = ?, is_active = 0, last_seen_at = ?
+                     WHERE id = ?",
+                    [$status, $now, $pairing_id]
+                );
+
+                $this->sendResponse([
+                    'success'    => true,
+                    'pairing_id' => $pairing_id,
+                    'merged_id'  => (int)$duplicate['id'],
+                    'status'     => $status,
+                    'message'    => 'Duplicate accessory UUID merged',
+                ]);
+                return;
+            }
+        }
  
         // Build update data
         $updateData = [

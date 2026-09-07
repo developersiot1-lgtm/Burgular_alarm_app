@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:http/http.dart' as http;
 import 'b_l_e_offline_controller.dart';
+import 'auth_service.dart';
 
 enum ConnectionMode { wifi, bluetooth, offline }
 
@@ -168,6 +169,7 @@ class ConnectionManager with ChangeNotifier {
             body: jsonEncode({
               'state': state,
               'user': user ?? 'Mobile App',
+              if (AuthService().userId != null) 'user_id': AuthService().userId,
               'device_uuid': _deviceUuid,
             }),
           )
@@ -201,6 +203,7 @@ class ConnectionManager with ChangeNotifier {
               body: jsonEncode({
                 'state': 'alarm',
                 'user': 'SOS TRIGGER',
+                if (AuthService().userId != null) 'user_id': AuthService().userId,
                 'device_uuid': _deviceUuid,
                 'emergency': true,
               }),

@@ -259,12 +259,16 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       if (uuid.isEmpty) continue;
 
       try {
+        final userId = AuthService().userId;
+        final uri = Uri.parse('https://monsow.in/alarm/index.php').replace(
+          queryParameters: {
+            'action': 'system_state',
+            'device_uuid': uuid,
+            if (userId != null) 'user_id': userId.toString(),
+          },
+        );
         final res = await http
-            .get(Uri.parse(
-              'https://monsow.in/alarm/index.php'
-              '?action=system_state'
-              '&device_uuid=${Uri.encodeComponent(uuid)}', // ← FIX: was get_alarm_status
-            ))
+            .get(uri)
             .timeout(const Duration(seconds: 5));
 
         if (res.statusCode == 200) {

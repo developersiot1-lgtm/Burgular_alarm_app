@@ -42,15 +42,15 @@ class Accessory {
   });
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'name': name,
-    'deviceName': deviceName,
-    'zone': zone,
-    'type': type.name,
-    'remoteMode': remoteMode,
-    'status': status.name,
-    'pairingId': pairingId,
-  };
+        'id': id,
+        'name': name,
+        'deviceName': deviceName,
+        'zone': zone,
+        'type': type.name,
+        'remoteMode': remoteMode,
+        'status': status.name,
+        'pairingId': pairingId,
+      };
 
   factory Accessory.fromLocalJson(Map<String, dynamic> j) {
     AccessoryType t;
@@ -134,9 +134,8 @@ class Accessory {
       type: t,
       remoteMode: j['remote_mode'] ?? j['remoteMode'],
       status: s,
-      pairingId: j['id'] is int
-          ? j['id']
-          : int.tryParse(j['id']?.toString() ?? ''),
+      pairingId:
+          j['id'] is int ? j['id'] : int.tryParse(j['id']?.toString() ?? ''),
     );
   }
 
@@ -257,7 +256,8 @@ class _AccessoriesScreenState extends State<AccessoriesScreen> {
         final serverList = await _apiService!.accessoryList(_hubDeviceUuid!);
         if (serverList.isNotEmpty) {
           final parsed = serverList
-              .map((s) => Accessory.fromServerJson(Map<String, dynamic>.from(s)))
+              .map(
+                  (s) => Accessory.fromServerJson(Map<String, dynamic>.from(s)))
               .toList();
           await AccessoryStorage.save(parsed);
           if (mounted) setState(() => _accessories = parsed);
@@ -341,8 +341,7 @@ class _AccessoriesScreenState extends State<AccessoriesScreen> {
               },
             ),
             ListTile(
-              leading:
-              const Icon(Icons.directions_walk, color: Colors.orange),
+              leading: const Icon(Icons.directions_walk, color: Colors.orange),
               title: const Text(
                 'Motion Sensor',
                 style: TextStyle(color: Colors.white),
@@ -545,10 +544,10 @@ class _AccessoriesScreenState extends State<AccessoriesScreen> {
   }
 
   void _showPairingScreen(
-      AccessoryType type, {
-        String? remoteMode,
-        String? customTypeLabel,
-      }) {
+    AccessoryType type, {
+    String? remoteMode,
+    String? customTypeLabel,
+  }) {
     final nameCtrl = TextEditingController();
     final zoneCtrl = TextEditingController();
 
@@ -565,8 +564,7 @@ class _AccessoriesScreenState extends State<AccessoriesScreen> {
 
     switch (type) {
       case AccessoryType.remote:
-        typeLabel =
-        'Remote (${remoteMode == 'armed' ? 'Armed' : 'Disarmed'})';
+        typeLabel = 'Remote (${remoteMode == 'armed' ? 'Armed' : 'Disarmed'})';
         typeIcon = Icons.settings_remote;
         typeColor = Colors.purple;
         instructions = 'Power on the remote and press the '
@@ -883,7 +881,8 @@ class _AccessoriesScreenState extends State<AccessoriesScreen> {
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: _accessories.length,
-                    itemBuilder: (ctx, i) => _buildPairedTile(_accessories[i], i),
+                    itemBuilder: (ctx, i) =>
+                        _buildPairedTile(_accessories[i], i),
                   ),
                 ] else
                   const Padding(
@@ -978,7 +977,9 @@ class _PairingDialogState extends State<PairingDialog> {
   String? _pairedMac;
   String? _pairedBleName;
   int? _pairingId;
+  String? _pairingHubUuid;
   bool _hubAckOnly = false;
+  bool _checkingServerPairingStatus = false;
 
   Timer? _timer;
   StreamSubscription<List<ScanResult>>? _scanSub;
@@ -1035,7 +1036,7 @@ class _PairingDialogState extends State<PairingDialog> {
     }
 
     _scanSub = FlutterBluePlus.scanResults.listen(
-          (results) async {
+      (results) async {
         if (!_isPairing ||
             _pairingDone ||
             _triedConnect ||
@@ -1076,9 +1077,9 @@ class _PairingDialogState extends State<PairingDialog> {
     if (widget.apiService == null || widget.hubDeviceUuid.isEmpty) {
       return null;
     }
-    try {
+    Future<int?> createForHub(String hubUuid) async {
       final result = await widget.apiService!.accessoryPair(
-        hubDeviceUuid: widget.hubDeviceUuid,
+        hubDeviceUuid: hubUuid,
         accessoryUuid: tempUuid,
         name: widget.nameController.text.trim(),
         type: widget.type.name,
@@ -1090,7 +1091,24 @@ class _PairingDialogState extends State<PairingDialog> {
       );
       if (result != null && result['success'] == true) {
         final id = result['id'];
-        return id is int ? id : int.tryParse(id?.toString() ?? '');
+        final parsedId = id is int ? id : int.tryParse(id?.toString() ?? '');
+        if (parsedId != null) {
+          _pairingHubUuid = hubUuid;
+        }
+        return parsedId;
+      }
+      return null;
+    }
+
+    try {
+      final primaryId = await createForHub(widget.hubDeviceUuid);
+      if (primaryId != null) {
+        return primaryId;
+      }
+
+      final fallbackHub = SettingsManager().hubLanguage;
+      if (fallbackHub.isNotEmpty && fallbackHub != widget.hubDeviceUuid) {
+        return await createForHub(fallbackHub);
       }
     } catch (e) {
       print('⚠️ Server pairing record error (non-fatal): $e');
@@ -1121,6 +1139,7 @@ class _PairingDialogState extends State<PairingDialog> {
       _statusMsg = 'Saving pairing request…';
       _pairedMac = null;
       _pairedBleName = null;
+      _pairingHubUuid = null;
       _pairingId = null;
       _triedConnect = false;
     });
@@ -1130,20 +1149,25 @@ class _PairingDialogState extends State<PairingDialog> {
     if (mounted) {
       setState(() => _statusMsg = 'Connecting to hub Bluetooth...');
     }
+    _checkServerPairingStatus();
     final hubBleOk = await _connectToHubBle();
     if (!hubBleOk && mounted && !_pairingDone) {
-      setState(() => _statusMsg = 'Hub Bluetooth not reachable - still waiting...');
+      setState(() => _statusMsg =
+          'Hub request sent. Press/trigger the ${_sensorLabel()} now...');
     }
 
     _timer?.cancel();
     _timer = Timer.periodic(
       const Duration(seconds: 1),
-          (t) {
+      (t) {
         if (!mounted) {
           t.cancel();
           return;
         }
         setState(() => _secondsLeft--);
+        if (_secondsLeft % 2 == 0) {
+          _checkServerPairingStatus();
+        }
         if (_secondsLeft <= 0) {
           t.cancel();
           if (!_pairingDone) {
@@ -1168,9 +1192,9 @@ class _PairingDialogState extends State<PairingDialog> {
   }
 
   Future<bool> _tryConnectAndVerify(
-      BluetoothDevice device,
-      String advName,
-      ) async {
+    BluetoothDevice device,
+    String advName,
+  ) async {
     _currentDevice = device;
     try {
       await device.connect(
@@ -1234,10 +1258,11 @@ class _PairingDialogState extends State<PairingDialog> {
       final bytes = Uint8List.fromList(utf8.encode(pairCmd));
       const chunkSize = 20;
       for (int i = 0; i < bytes.length; i += chunkSize) {
-        final end = (i + chunkSize < bytes.length) ? i + chunkSize : bytes.length;
+        final end =
+            (i + chunkSize < bytes.length) ? i + chunkSize : bytes.length;
         final chunk = bytes.sublist(i, end);
-        final useWWR =
-            !writeChar!.properties.write && writeChar.properties.writeWithoutResponse;
+        final useWWR = !writeChar!.properties.write &&
+            writeChar.properties.writeWithoutResponse;
         await writeChar.write(chunk, withoutResponse: useWWR);
         await Future.delayed(const Duration(milliseconds: 30));
       }
@@ -1249,11 +1274,29 @@ class _PairingDialogState extends State<PairingDialog> {
 
       if (notifyChar != null) {
         try {
-          final raw = await notifyChar.lastValueStream
-              .where((v) => v.isNotEmpty)
+          final ack = await notifyChar.lastValueStream
+              .asyncMap<Map<String, dynamic>?>((v) async {
+                if (v.isEmpty) return null;
+                final text = utf8.decode(v, allowMalformed: true).trim();
+                if (!text.startsWith('{')) {
+                  print('ℹ️ Hub status notify ignored: $text');
+                  return null;
+                }
+                try {
+                  final decoded = jsonDecode(text);
+                  return decoded is Map<String, dynamic> ? decoded : null;
+                } catch (e) {
+                  print('⚠️ Hub notify JSON ignored: $text');
+                  return null;
+                }
+              })
+              .where((m) =>
+                  m != null &&
+                  m['type']?.toString() == 'sensor_ack' &&
+                  (m['status']?.toString() ?? '').isNotEmpty)
+              .cast<Map<String, dynamic>>()
               .first
-              .timeout(const Duration(seconds: 8));
-          final ack = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+              .timeout(Duration(seconds: _totalSec));
           final ackType = ack['type']?.toString();
           final ackStatus = ack['status']?.toString() ?? '';
           if (ackType == 'sensor_ack' && ackStatus.isNotEmpty) {
@@ -1288,6 +1331,47 @@ class _PairingDialogState extends State<PairingDialog> {
     }
   }
 
+  Future<void> _checkServerPairingStatus() async {
+    if (_checkingServerPairingStatus ||
+        _pairingDone ||
+        _pairingId == null ||
+        widget.apiService == null ||
+        (_pairingHubUuid ?? widget.hubDeviceUuid).isEmpty) {
+      return;
+    }
+
+    _checkingServerPairingStatus = true;
+    try {
+      final accessories = await widget.apiService!
+          .accessoryList(_pairingHubUuid ?? widget.hubDeviceUuid);
+      for (final raw in accessories) {
+        if (raw is! Map) continue;
+        final id =
+            raw['id'] is int ? raw['id'] as int : int.tryParse('${raw['id']}');
+        if (id != _pairingId) continue;
+
+        final status = raw['status']?.toString().toLowerCase() ?? '';
+        if (status == 'paired') {
+          _pairedMac = raw['accessory_uuid']?.toString() ?? _pairedMac;
+          _pairedBleName = raw['device_ble_name']?.toString() ??
+              raw['accessory_name']?.toString() ??
+              _pairedBleName;
+          _hubAckOnly = false;
+          _finishPairing(success: true);
+          return;
+        }
+        if (status == 'failed' || status == 'timeout') {
+          _finishPairing(success: false, reason: status);
+          return;
+        }
+      }
+    } catch (e) {
+      print('⚠️ Pairing status poll error: $e');
+    } finally {
+      _checkingServerPairingStatus = false;
+    }
+  }
+
   void _finishPairing({required bool success, String? reason}) {
     _cleanup();
     if (!mounted) return;
@@ -1297,14 +1381,14 @@ class _PairingDialogState extends State<PairingDialog> {
       _pairingSuccess = success;
       _statusMsg = success
           ? (_hubAckOnly
-          ? 'Hub accepted pairing request.'
-          : 'Sensor paired via Bluetooth!')
+              ? 'Hub accepted pairing request.'
+              : 'Sensor paired via Bluetooth!')
           : reason == 'timeout'
-          ? 'No sensor found within $_totalSec seconds.\n\n'
-          'Make sure the sensor is:\n'
-          '• Powered on\n'
-          '• Within Bluetooth range'
-          : 'Pairing failed. Please try again.';
+              ? 'No sensor found within $_totalSec seconds.\n\n'
+                  'Make sure the sensor is:\n'
+                  '• Powered on\n'
+                  '• Within Bluetooth range'
+              : 'Pairing failed. Please try again.';
     });
 
     if (widget.apiService != null && _pairingId != null) {
@@ -1313,11 +1397,11 @@ class _PairingDialogState extends State<PairingDialog> {
           : (reason == 'timeout' ? 'timeout' : 'failed');
       widget.apiService!
           .accessoryUpdatePairingStatus(
-        pairingId: _pairingId!,
-        accessoryUuid: _pairedMac,
-        deviceBleName: _pairedBleName,
-        status: newStatus,
-      )
+            pairingId: _pairingId!,
+            accessoryUuid: _pairedMac,
+            deviceBleName: _pairedBleName,
+            status: newStatus,
+          )
           .then((_) => print('✅ Server pairing status → $newStatus'))
           .catchError((e) => print('⚠️ Server status update failed: $e'));
     }
@@ -1360,6 +1444,7 @@ class _PairingDialogState extends State<PairingDialog> {
       _statusMsg = '';
       _pairedMac = null;
       _pairedBleName = null;
+      _pairingHubUuid = null;
       _triedConnect = false;
       _pairingId = null;
     });
@@ -1414,7 +1499,8 @@ class _PairingDialogState extends State<PairingDialog> {
                 hintText: 'e.g. Living Room Sensor',
                 hintStyle: const TextStyle(color: Colors.white30),
                 enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: widget.typeColor.withOpacity(0.4)),
+                  borderSide:
+                      BorderSide(color: widget.typeColor.withOpacity(0.4)),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 focusedBorder: OutlineInputBorder(
@@ -1422,7 +1508,8 @@ class _PairingDialogState extends State<PairingDialog> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 disabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: widget.typeColor.withOpacity(0.15)),
+                  borderSide:
+                      BorderSide(color: widget.typeColor.withOpacity(0.15)),
                   borderRadius: BorderRadius.circular(8),
                 ),
               ),
@@ -1438,7 +1525,8 @@ class _PairingDialogState extends State<PairingDialog> {
                 hintText: 'e.g. Entry, Bedroom',
                 hintStyle: const TextStyle(color: Colors.white30),
                 enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: widget.typeColor.withOpacity(0.4)),
+                  borderSide:
+                      BorderSide(color: widget.typeColor.withOpacity(0.4)),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 focusedBorder: OutlineInputBorder(
@@ -1446,7 +1534,8 @@ class _PairingDialogState extends State<PairingDialog> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 disabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: widget.typeColor.withOpacity(0.15)),
+                  borderSide:
+                      BorderSide(color: widget.typeColor.withOpacity(0.15)),
                   borderRadius: BorderRadius.circular(8),
                 ),
               ),

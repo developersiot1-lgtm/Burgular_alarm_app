@@ -344,11 +344,15 @@ Future<void> _pollAndNotify(
   //   (no alarm_active field)   → infer from rawState == 'alarm'
   bool onlineOk = false;
   try {
+    final userId = prefs.getInt('auth_user_id');
+    final stateParams = <String, String>{
+      'action': 'system_state',
+      'device_uuid': deviceUuid,
+      if (userId != null && userId > 0) 'user_id': userId.toString(),
+    };
     final res = await http
         .get(
-          Uri.parse(
-            '$_kBaseUrl?action=system_state&device_uuid=${Uri.encodeComponent(deviceUuid)}',
-          ),
+          Uri.parse(_kBaseUrl).replace(queryParameters: stateParams),
         )
         .timeout(const Duration(seconds: 8));
 
@@ -447,11 +451,18 @@ Future<void> _pollAndNotify(
 // Only called when state == 'alarm'. Returns null on any error.
 Future<Map<String, dynamic>?> _fetchAlarmDetail(String deviceUuid) async {
   try {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getInt('auth_user_id');
+    final uri = Uri.parse(_kBaseUrl).replace(
+      queryParameters: {
+        'action': 'get_alarm_status',
+        'device_uuid': deviceUuid,
+        if (userId != null && userId > 0) 'user_id': userId.toString(),
+      },
+    );
     final res = await http
         .get(
-          Uri.parse(
-            '$_kBaseUrl?action=get_alarm_status&device_uuid=${Uri.encodeComponent(deviceUuid)}',
-          ),
+          uri,
         )
         .timeout(const Duration(seconds: 5));
 
@@ -625,7 +636,7 @@ Future<void> _handleTransition({
           final zone = (first['zone'] ?? '').toString();
           final name = (first['name'] ?? '').toString();
           final type = (first['type'] ?? 'sensor').toString();
-          final display = zone.isNotEmpty ? zone : name;
+          final display = name.isNotEmpty ? name : zone;
           if (display.isNotEmpty) {
             title = '🚨 ALARM! ${_cleanZone(display)}';
             body = '${_typeLabel(type, display)} — open the app immediately!';

@@ -154,6 +154,8 @@ class OfflineManager with ChangeNotifier {
               body: jsonEncode({
                 'state': action['state'],
                 'user':  action['user'] ?? 'offline_sync',
+                if ((_prefs?.getInt('auth_user_id') ?? 0) > 0)
+                  'user_id': _prefs!.getInt('auth_user_id'),
                 'device_uuid': action['device_uuid'] ?? 'default',
               }),
             ).timeout(const Duration(seconds: 10));

@@ -13,6 +13,7 @@
 #include <RCSwitch.h>
 #include <nvs_flash.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 
 #define ENABLE_BLE_PROVISIONING 1
 
@@ -42,9 +43,10 @@ BLECharacteristic *wifiTxCharacteristic = nullptr;
 static const int MODEM_RX = 16;
 static const int MODEM_TX = 17;
 static const int MODEM_BAUD = 115200;
-static const int MODEM_PWRKEY_PIN = -1;      // Set GPIO if A7670C PWRKEY is wired to ESP32
+static const int MODEM_PWRKEY_PIN = -1;      // ADIY A7670C breakout has no PWRKEY pin exposed
 static const int MODEM_PWRKEY_ON_STATE = LOW;
-static const unsigned long MODEM_PWRKEY_PULSE_MS = 1500;
+static const unsigned long MODEM_PWRKEY_PULSE_MS = 1200;
+static const unsigned long MODEM_BOOT_SETTLE_MS = 8000;
 
 // Schematic pin mapping
 static const int LCD_I2C_SDA_PIN = 2;       // ARM net reused as LCD SDA
@@ -88,11 +90,13 @@ static const char *SYSTEM_STATE_URL = "http://monsow.in/alarm/index.php?action=s
 // -------------------------------------------------------------------
 static const bool ALLOW_APP_ARM_DISARM_CONTROL = true;
 static const char *DEVICE_REGISTER_URL = "http://monsow.in/alarm/index.php?action=device_register";
+static const char *FIRMWARE_RESET_URL = "http://monsow.in/alarm/index.php?action=firmware_factory_reset";
 static const char *SETTINGS_URL_BASE = "http://monsow.in/alarm/index.php?action=sync_settings_to_device&device_uuid=";
 static const char *PREF_NAMESPACE = "alarmcfg";
 static const char *PREF_WIFI_SSID = "wifi_ssid";
 static const char *PREF_WIFI_PASS = "wifi_pass";
 static const char *PREF_SETTINGS_CACHE = "set_cache";
+static const char *PREF_PENDING_FW_CLEAN = "fw_clean_pend";
 static const char *BLE_DEVICE_NAME = "MONSOW_072608";
 static const char *BLE_SERVICE_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E2";
 static const char *BLE_RX_UUID = "703DE63C-1C78-703D-E63C-1A42B93437E3";
@@ -106,29 +110,32 @@ RTC_DATA_ATTR uint32_t rtcWarmResetMarker = 0;
 static const uint32_t RTC_WARM_RESET_MAGIC = 0xB16B00B5UL;
 
 // Poll interval for app/server arm-disarm state.
-static const unsigned long STATE_POLL_DISARMED_MS = 500;
-static const unsigned long STATE_POLL_ARMED_MS = 2500;
+static const unsigned long STATE_POLL_DISARMED_MS = 3000;
+static const unsigned long STATE_POLL_ARMED_MS = 3000;
 static const unsigned long MODEM_NETWORK_TIMEOUT_MS = 60000;
-static const unsigned long GSM_POWER_FAULT_COOLDOWN_MS = 60000;
+static const unsigned long GSM_POWER_FAULT_COOLDOWN_MS = 120000;
 static const unsigned long RF_PAIR_WINDOW_MS = 120000;
+static const unsigned long FW_RESET_HOLD_MS = 5000;
 static const unsigned long LCD_UPDATE_INTERVAL_MS = 1000;
+static const unsigned long LCD_EVENT_BACKLIGHT_MS = 15000;
+static const uint8_t LCD_BACKLIGHT_BIT = 0x08;
 static const unsigned long OUTPUT_PIN_LOG_INTERVAL_MS = 5000;
 static const unsigned long WIFI_CONNECT_TIMEOUT_MS = 25000;
-static const unsigned long WIFI_RETRY_ONLINE_MS = 2000;
-static const unsigned long WIFI_RETRY_OFFLINE_MS = 10000;
+static const unsigned long WIFI_RETRY_ONLINE_MS = 5000;
+static const unsigned long WIFI_RETRY_OFFLINE_MS = 15000;
 static const uint16_t WIFI_SCAN_MAX_MS_PER_CHANNEL = 450;
 static const unsigned long GSM_RETRY_INTERVAL_MS = 30000;
 static const bool START_BLE_PROVISIONING_ON_WIFI_FAIL = false;
 static const bool START_BLE_PROVISIONING_ON_BOOT = false;
 static const unsigned long BLE_BOOT_ADVERTISING_MS = 120000;
-static const unsigned long PAIRING_REQUEST_POLL_MS = 2000;
+static const unsigned long PAIRING_REQUEST_POLL_MS = 5000;
 static const char *PAIRING_REQUEST_URL = "http://monsow.in/alarm/index.php?action=get_pairing_request&device_uuid=";
 static const char *PAIRING_STATUS_URL = "http://monsow.in/alarm/index.php?action=update_pairing_status";
-static const unsigned long HTTP_TIMEOUT_DISARMED_MS = 8000;
-static const unsigned long HTTP_TIMEOUT_ARMED_MS = 1500;
-static const uint8_t SERVER_OFFLINE_AFTER_FAILS = 3;
-static const unsigned long SERVER_DECLARE_OFFLINE_AFTER_MS = 5000;
-static const unsigned long SERVER_OFFLINE_RETRY_MS = 30000;
+static const unsigned long HTTP_TIMEOUT_DISARMED_MS = 10000;
+static const unsigned long HTTP_TIMEOUT_ARMED_MS = 6000;
+static const uint8_t SERVER_OFFLINE_AFTER_FAILS = 6;
+static const unsigned long SERVER_DECLARE_OFFLINE_AFTER_MS = 20000;
+static const unsigned long SERVER_OFFLINE_RETRY_MS = 15000;
 static const bool AUTO_ARM_ON_SERVER_OFFLINE = false;
 static const unsigned long AUTO_ARM_DELAY_MS = 15000;
 // Set true to enable GSM SMS/call features using UART2 on GPIO16/17.
@@ -179,8 +186,8 @@ char callNumbers[MAX_CONTACT_NUMBERS][CONTACT_NUMBER_LEN];
 uint8_t smsNumberCount = 0;
 uint8_t callNumberCount = 0;
 unsigned long lastSettingsFetchAt = 0;
-static const unsigned long SETTINGS_FETCH_DISARMED_MS = 5000;
-static const unsigned long SETTINGS_FETCH_ARMED_MS = 6000;
+static const unsigned long SETTINGS_FETCH_DISARMED_MS = 60000;
+static const unsigned long SETTINGS_FETCH_ARMED_MS = 60000;
 String cachedSettingsJson;
 long lastSettingsSyncLogId = -1;
 
@@ -295,6 +302,7 @@ unsigned long serverFailWindowStartedAt = 0;
 unsigned long lastServerOkAt = 0;
 bool gsmCallActive = false;
 unsigned long nextServerRetryAt = 0;
+bool pendingServerFactoryResetCleanup = false;
 bool autoArmScheduled = false;
 bool autoArmDone = false;
 unsigned long autoArmDueAt = 0;
@@ -303,6 +311,10 @@ unsigned long lastPairingRequestPollAt = 0;
 unsigned long lastPairingNoRequestLogAt = 0;
 long lastServerPairingRequestId = -1;
 unsigned long stopBleAfterPairingAt = 0;
+uint32_t recentlyPairedRfCode = 0;
+unsigned long recentlyPairedRfIgnoreUntil = 0;
+long locallyCompletedPairingRequestId = -1;
+unsigned long locallyCompletedPairingIgnoreUntil = 0;
 
 bool suppressAlarmSound = false;
 int lastDoorZoneState[DOOR_ZONE_COUNT];
@@ -312,6 +324,8 @@ int lastRfPairButtonState = HIGH;
 int lastPowerSenseState = LOW;
 unsigned long rfPairButtonPressedAt = 0;
 bool rfPairLongPressHandled = false;
+unsigned long fwResetButtonPressedAt = 0;
+bool fwResetLongPressHandled = false;
 unsigned long lastBatteryLogAt = 0;
 unsigned long lastPanelLowBatteryNotifyAt = 0;
 unsigned long lastLcdUpdateAt = 0;
@@ -321,6 +335,8 @@ int lastLoggedAuxBuzzerState = -1;
 int lastLoggedSirenState = -1;
 bool lcdReady = false;
 uint8_t activeLcdAddress = LCD_I2C_ADDRESS;
+bool lcdBacklightEnabled = false;
+unsigned long lcdBacklightOffAt = 0;
 bool gsmNetworkOnline = false;
 bool modemAtOnline = false;
 uint32_t activeModemBaud = MODEM_BAUD;
@@ -356,6 +372,9 @@ String settingVirtualPassword;
 uint8_t readBatteryPercentage();
 float readBatteryVoltage();
 void serviceAlarmPriorityTasks();
+void updateLcdStatus(bool force);
+void serviceLcdBacklightTimeout();
+void lcdBacklightForEvent(const char *reason);
 
 void clearContactNumbers() {
   memset(smsNumbers, 0, sizeof(smsNumbers));
@@ -975,6 +994,13 @@ void loadCachedSettingsFromPreferences() {
   sanitizeContactNumbers();
 }
 
+void prepareHttpRequest(HTTPClient &http) {
+  http.useHTTP10(true);
+  http.setReuse(false);
+  http.addHeader("User-Agent", "MONSOW-ESP32/1.0");
+  http.addHeader("Accept", "application/json");
+}
+
 void fetchSettingsFromServer() {
   if (!allowServerRequests()) {
     return;
@@ -983,9 +1009,10 @@ void fetchSettingsFromServer() {
   const String baseUuid = deviceUuid();
   HTTPClient http;
   http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
-  String url = String(SETTINGS_URL_BASE) + baseUuid + "&device_name=" + deviceName();
+  String url = String(SETTINGS_URL_BASE) + urlEncode(baseUuid) + "&device_name=" + urlEncode(deviceName());
   Serial.printf("[SETTINGS] GET %s\n", url.c_str());
   http.begin(url);
+  prepareHttpRequest(http);
   int status = http.GET();
   String body = http.getString();
   http.end();
@@ -1031,6 +1058,7 @@ void sendAlarmEvent(String eventType, String zone, String message) {
   String url = "http://monsow.in/alarm/index.php?action=alarm_event";
 
   http.begin(url);
+  prepareHttpRequest(http);
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
@@ -1176,6 +1204,10 @@ class ProvisioningServerCallbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer *server) override {
     bleClientConnected = false;
     Serial.println("[BLE] Client disconnected");
+    if (!bleProvisioningActive || pendingWifiConnectAfterBleConfig || stopBleAfterPairingAt != 0) {
+      Serial.println("[BLE] Advertising restart skipped; BLE stop/WiFi connect pending");
+      return;
+    }
     delay(120);
     BLEAdvertising *advertising = BLEDevice::getAdvertising();
     advertising->addServiceUUID(BLE_SERVICE_UUID);
@@ -1273,6 +1305,13 @@ class WifiProvisioningCallbacks : public BLECharacteristicCallbacks {
       rfPairingId = pairId;
       rfPairingStartedAt = millis();
       Serial.println("[RF] Waiting for next RF signal for pairing");
+      updateLcdStatus(true);
+      beep(2, 80, 80);
+      if (wifiTxCharacteristic) {
+        wifiTxCharacteristic->setValue("PAIRING_STARTED");
+        wifiTxCharacteristic->notify();
+        Serial.println("[BLE] TX notify: PAIRING_STARTED");
+      }
       return;
     }
 
@@ -1467,12 +1506,14 @@ void pauseBleAdvertisingForWifiConnect() {
 
 void resumeBleAdvertisingAfterWifiConnect() {
 #if ENABLE_BLE_PROVISIONING
+  if (pendingWifiConnectAfterBleConfig || WiFi.status() != WL_CONNECTED) {
+    Serial.println("[BLE] Advertising resume skipped; WiFi connect/provisioning not settled");
+    return;
+  }
   if (!bleProvisioningActive || bleClientConnected) {
     return;
   }
-  BLEDevice::getAdvertising()->start();
-  bleProvisioningStartedAt = millis();
-  Serial.printf("[BLE] Advertising resumed for app/accessory pairing: %s\n", BLE_DEVICE_NAME);
+  Serial.println("[BLE] Advertising resume skipped; BLE starts only on app pairing request/manual mode");
 #endif
 }
 
@@ -1607,7 +1648,7 @@ String fitLcdLine(const String &text) {
 
 bool lcdWriteExpander(uint8_t data) {
   Wire.beginTransmission(activeLcdAddress);
-  Wire.write(data | 0x08);
+  Wire.write(lcdBacklightEnabled ? (data | LCD_BACKLIGHT_BIT) : (data & ~LCD_BACKLIGHT_BIT));
   byte error = Wire.endTransmission();
   if (error != 0) {
     lcdReady = false;
@@ -1702,6 +1743,14 @@ void updateLcdStatus(bool force = false) {
     return;
   }
   lastLcdUpdateAt = now;
+
+  if (rfPairingActive) {
+    lcdPrintLine(0, "PAIRING MODE");
+    lcdPrintLine(1, "BLE ON - APP OK");
+    lcdPrintLine(2, "PRESS RF SENSOR");
+    lcdPrintLine(3, "WAITING SIGNAL...");
+    return;
+  }
 
   char line[21];
   snprintf(line, sizeof(line), "ALARM  BAT:%3u%%", readBatteryPercentage());
@@ -1825,6 +1874,7 @@ void updateServerPairingStatus(const String &status, uint32_t rfCode = 0) {
   HTTPClient http;
   http.setTimeout(2500);
   http.begin(PAIRING_STATUS_URL);
+  prepareHttpRequest(http);
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{\"pairing_id\":" + rfPairingId +
@@ -1875,6 +1925,16 @@ void serviceBleStopAfterPairing() {
 
 void startServerRequestedPairing(const String &body) {
   long pairingId = extractJsonIntValue(body, "pairing_id", -1);
+  if (pairingId >= 0 &&
+      pairingId == locallyCompletedPairingRequestId &&
+      millis() < locallyCompletedPairingIgnoreUntil) {
+    Serial.printf("[PAIR] Ignoring already captured pairing request id=%ld; waiting server/app to clear it\n", pairingId);
+    return;
+  }
+  if (rfPairingActive) {
+    Serial.printf("[PAIR] Pairing already active, ignoring new request id=%ld\n", pairingId);
+    return;
+  }
   bool repeatedRequest = pairingId >= 0 && pairingId == lastServerPairingRequestId;
 
   String pairType = extractJsonStringValue(body, "accessory_type");
@@ -1920,16 +1980,20 @@ void pollPairingRequestIfDue() {
   bool requestFound = false;
   String candidates[2];
   uint8_t candidateCount = 0;
-  candidates[candidateCount++] = deviceUuid();
-  if (settingHubLanguage.length() > 0 && settingHubLanguage != candidates[0]) {
+  if (settingHubLanguage.length() > 0) {
     candidates[candidateCount++] = settingHubLanguage;
+  }
+  String baseUuid = deviceUuid();
+  if (candidateCount == 0 || baseUuid != candidates[0]) {
+    candidates[candidateCount++] = baseUuid;
   }
 
   for (uint8_t i = 0; i < candidateCount; i++) {
     HTTPClient http;
     http.setTimeout(2500);
-    String url = String(PAIRING_REQUEST_URL) + candidates[i];
+    String url = String(PAIRING_REQUEST_URL) + urlEncode(candidates[i]);
     http.begin(url);
+    prepareHttpRequest(http);
     int status = http.GET();
     String body = http.getString();
     http.end();
@@ -1937,6 +2001,13 @@ void pollPairingRequestIfDue() {
     if (status == 200) {
       noteServerOk();
       if (extractJsonBoolValue(body, "has_request", false)) {
+        long pairingId = extractJsonIntValue(body, "pairing_id", -1);
+        if (pairingId >= 0 &&
+            pairingId == locallyCompletedPairingRequestId &&
+            millis() < locallyCompletedPairingIgnoreUntil) {
+          Serial.printf("[PAIR] Ignoring already completed pairing request id=%ld (waiting for server to clear)\n", pairingId);
+          continue;
+        }
         Serial.printf("[PAIR] Server request body for uuid=%s: %s\n", candidates[i].c_str(), body.c_str());
         startServerRequestedPairing(body);
         requestFound = true;
@@ -2027,15 +2098,80 @@ void handleMicRecordButtonPress() {
   beep(1, 80, 60);
 }
 
+bool notifyServerFirmwareFactoryReset() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[FW_RESET] Server cleanup skipped; WiFi not connected");
+    return false;
+  }
+
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.begin(FIRMWARE_RESET_URL);
+  prepareHttpRequest(http);
+  http.addHeader("Content-Type", "application/json");
+
+  String payload = "{";
+  payload += "\"device_uuid\":\"" + jsonEscape(deviceUuid()) + "\",";
+  payload += "\"device_name\":\"" + jsonEscape(deviceName()) + "\",";
+  payload += "\"mac_address\":\"" + jsonEscape(WiFi.macAddress()) + "\",";
+  payload += "\"hub_language\":\"" + jsonEscape(settingHubLanguage) + "\",";
+  payload += "\"reason\":\"firmware_reset_button_5s\"";
+  payload += "}";
+
+  Serial.printf("[FW_RESET] POST %s\n", FIRMWARE_RESET_URL);
+  int status = http.POST(payload);
+  String body = http.getString();
+  Serial.printf("[FW_RESET] Server cleanup status=%d body=%s\n", status, body.c_str());
+  http.end();
+
+  bool success = (status == 200) &&
+                 body.indexOf("\"success\":false") < 0 &&
+                 body.indexOf("\"success\": false") < 0;
+  if (success) {
+    noteServerOk();
+  } else {
+    noteServerFail("firmware_factory_reset", status);
+  }
+  return success;
+}
+
+void setPendingServerFactoryResetCleanup(bool pending) {
+  prefs.begin(PREF_NAMESPACE, false);
+  prefs.putBool(PREF_PENDING_FW_CLEAN, pending);
+  prefs.end();
+  pendingServerFactoryResetCleanup = pending;
+  Serial.printf("[FW_RESET] Pending server cleanup=%s\n", pending ? "YES" : "NO");
+}
+
+void servicePendingServerFactoryResetCleanup() {
+  if (!pendingServerFactoryResetCleanup) {
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED || !allowServerRequests()) {
+    return;
+  }
+  Serial.println("[FW_RESET] Running pending server cleanup before register");
+  if (notifyServerFirmwareFactoryReset()) {
+    setPendingServerFactoryResetCleanup(false);
+  } else {
+    Serial.println("[FW_RESET] Pending cleanup failed; will retry before next register");
+  }
+}
+
 void handleFirmwareResetButtonPress() {
   Serial.println("[FW_RESET] Factory reset requested");
-  Serial.println("[FW_RESET] Erasing WiFi, sensors, contacts, settings, and all NVS data");
+  Serial.println("[FW_RESET] Erasing server users/admins plus local WiFi, sensors, contacts, settings");
   lcdPrintLine(0, "FACTORY RESET      ");
-  lcdPrintLine(1, "ERASING ALL DATA   ");
+  lcdPrintLine(1, "SERVER CLEANUP...  ");
   lcdPrintLine(2, "PLEASE WAIT...     ");
   lcdPrintLine(3, "                    ");
   beep(2, 120, 80);
+  bool serverCleaned = notifyServerFirmwareFactoryReset();
+  lcdPrintLine(1, "ERASING LOCAL DATA ");
   clearAllStoredData();
+  if (!serverCleaned) {
+    setPendingServerFactoryResetCleanup(true);
+  }
   delay(500);
   Serial.println("[FW_RESET] Erase complete, restarting");
   ESP.restart();
@@ -2056,8 +2192,18 @@ void pollBoardButtons() {
   if (lastFwResetButtonState == HIGH && fwState == LOW) {
     delay(BUTTON_DEBOUNCE_MS);
     if (digitalRead(FW_RESET_PIN) == LOW) {
-      handleFirmwareResetButtonPress();
+      fwResetButtonPressedAt = millis();
+      fwResetLongPressHandled = false;
+      Serial.println("[FW_RESET] Hold button for 5 seconds to factory reset");
     }
+  } else if (fwState == LOW && !fwResetLongPressHandled &&
+             fwResetButtonPressedAt > 0 &&
+             millis() - fwResetButtonPressedAt >= FW_RESET_HOLD_MS) {
+    fwResetLongPressHandled = true;
+    handleFirmwareResetButtonPress();
+  } else if (fwState == HIGH) {
+    fwResetButtonPressedAt = 0;
+    fwResetLongPressHandled = false;
   }
 
   if (lastRfPairButtonState == HIGH && rfState == LOW) {
@@ -2102,19 +2248,23 @@ RfType rfTypeFromString(String value) {
   return RF_TYPE_NONE;
 }
 
-RfType resolvePairingRfType(String pairType, String pairRemoteMode, String pairZone) {
+RfType resolvePairingRfType(String pairType, String pairRemoteMode, String pairZone, String pairName) {
   pairType.trim();
   pairRemoteMode.trim();
   pairZone.trim();
+  pairName.trim();
   pairType.toLowerCase();
   pairRemoteMode.toLowerCase();
   pairZone.toLowerCase();
+  pairName.toLowerCase();
 
   if (pairType == "remote") {
-    if (pairRemoteMode == "disarm" || pairRemoteMode == "disarmed" || pairZone == "disarm") {
+    if (pairRemoteMode == "disarm" || pairRemoteMode == "disarmed" ||
+        pairZone == "disarm" || pairName == "disarm" || pairName == "disarmed") {
       return RF_TYPE_REMOTE_DISARM;
     }
-    if (pairRemoteMode == "arm" || pairRemoteMode == "armed" || pairZone == "arm") {
+    if (pairRemoteMode == "arm" || pairRemoteMode == "armed" ||
+        pairZone == "arm" || pairName == "arm" || pairName == "armed") {
       return RF_TYPE_REMOTE_ARM;
     }
   }
@@ -2180,7 +2330,7 @@ void loadLearnedRfItems() {
 }
 
 bool storeLearnedRfItem(uint32_t code, const String &pairType, const String &pairName, const String &pairZone, const String &pairRemoteMode) {
-  RfType type = resolvePairingRfType(pairType, pairRemoteMode, pairZone);
+  RfType type = resolvePairingRfType(pairType, pairRemoteMode, pairZone, pairName);
 
   int index = findLearnedRfIndex(code);
   if (index < 0) {
@@ -2218,9 +2368,13 @@ void loadWifiCredentials() {
   prefs.begin(PREF_NAMESPACE, true);
   provisionedSsid = prefs.getString(PREF_WIFI_SSID, DEFAULT_WIFI_SSID);
   provisionedPassword = prefs.getString(PREF_WIFI_PASS, DEFAULT_WIFI_PASSWORD);
+  pendingServerFactoryResetCleanup = prefs.getBool(PREF_PENDING_FW_CLEAN, false);
   prefs.end();
   wifiProvisioned = provisionedSsid.length() > 0;
   Serial.printf("[WIFI] Stored SSID present=%s\n", wifiProvisioned ? "YES" : "NO");
+  if (pendingServerFactoryResetCleanup) {
+    Serial.println("[FW_RESET] Pending server cleanup loaded from NVS");
+  }
 }
 
 void clearWifiCredentials() {
@@ -2250,6 +2404,29 @@ void clearAllStoredData() {
   provisionedSsid = "";
   provisionedPassword = "";
   wifiProvisioned = false;
+  cachedSettingsJson = "";
+  clearContactNumbers();
+  learnedRfItemCount = 0;
+  memset(learnedRfItems, 0, sizeof(learnedRfItems));
+  clearRfPairingRequest();
+  locallyCompletedPairingRequestId = -1;
+  locallyCompletedPairingIgnoreUntil = 0;
+  lastServerPairingRequestId = -1;
+  settingExitDelaySeconds = 0;
+  settingEntryDelaySeconds = 0;
+  settingAlarmDurationMinutes = 3;
+  settingAlarmSound = true;
+  settingAlarmNotification = true;
+  settingCountdownWithTickTone = true;
+  settingArmDisarmNotification = true;
+  settingTamperAlarm = true;
+  settingSensorLowBatteryNotification = true;
+  settingAlarmCall = false;
+  settingAlarmSms = false;
+  settingUnansweredPhoneRedialTimes = 1;
+  settingVirtualPassword = "";
+  settingHubLanguage = "";
+  Serial.println("[BOOT] Local WiFi, RF sensors/remotes, contacts, and settings cleared");
 }
 
 void prepareWiFiForBleCoexistence() {
@@ -2327,10 +2504,11 @@ void stopBleProvisioning() {
   if (!bleProvisioningActive) {
     return;
   }
-  BLEDevice::getAdvertising()->stop();
-  BLEDevice::deinit(false);
   bleProvisioningActive = false;
   bleProvisioningStartedAt = 0;
+  bleClientConnected = false;
+  BLEDevice::getAdvertising()->stop();
+  BLEDevice::deinit(false);
   Serial.println("[BLE] Provisioning stopped");
   updateLcdStatus(true);
   restoreWiFiAfterBleCoexistence();
@@ -2378,12 +2556,35 @@ String jsonEscape(const String &value) {
   return out;
 }
 
+String urlEncode(const String &value) {
+  const char *hex = "0123456789ABCDEF";
+  String out;
+  for (size_t i = 0; i < value.length(); i++) {
+    uint8_t c = static_cast<uint8_t>(value[i]);
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+        c == '-' || c == '_' || c == '.' || c == '~') {
+      out += static_cast<char>(c);
+    } else {
+      out += '%';
+      out += hex[(c >> 4) & 0x0F];
+      out += hex[c & 0x0F];
+    }
+  }
+  return out;
+}
+
 String deviceUuid() {
   return WiFi.macAddress();
 }
 
 String deviceName() {
   return String(BLE_DEVICE_NAME);
+}
+
+String systemStateDeviceUuid() {
+  String uuid = settingHubLanguage;
+  uuid.trim();
+  return uuid.length() > 0 ? uuid : deviceUuid();
 }
 
 void appendCleanAtChar(String &out, int byteValue) {
@@ -2399,6 +2600,11 @@ void appendCleanAtChar(String &out, int byteValue) {
   }
 }
 
+void yieldToSystem(uint32_t delayMs = 1) {
+  delay(delayMs);
+  yield();
+}
+
 String readAtResponse(uint32_t timeoutMs = 1000) {
   String out;
   unsigned long start = millis();
@@ -2406,7 +2612,7 @@ String readAtResponse(uint32_t timeoutMs = 1000) {
     while (SerialAT.available()) {
       appendCleanAtChar(out, SerialAT.read());
     }
-    delay(2);
+    yieldToSystem(2);
   }
   out.trim();
   return out;
@@ -2431,7 +2637,25 @@ String queryAt(const char *command, uint32_t timeoutMs = 1000) {
     if (out.indexOf("ERROR") >= 0) {
       break;
     }
-    delay(2);
+    yieldToSystem(2);
+  }
+  out.trim();
+  return out;
+}
+
+String readAtFinalResponse(uint32_t timeoutMs) {
+  String out;
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
+    while (SerialAT.available()) {
+      appendCleanAtChar(out, SerialAT.read());
+    }
+    if (out.indexOf("+CMGS:") >= 0 || out.indexOf("+CMS ERROR") >= 0 ||
+        out.indexOf("\nOK") >= 0 || out.endsWith("OK") ||
+        out.indexOf("ERROR") >= 0) {
+      break;
+    }
+    yieldToSystem(5);
   }
   out.trim();
   return out;
@@ -2678,7 +2902,7 @@ bool waitForGsmAtOkFixedBaud(unsigned long totalWaitMs) {
 
 bool connectModemAt() {
   modemAtOnline = false;
-  if (waitForGsmAtOkFixedBaud(12000)) {
+  if (waitForGsmAtOkFixedBaud(3000)) {
     activeModemBaud = MODEM_BAUD;
     queryAt("ATE0", 2000);
     return true;
@@ -2707,6 +2931,13 @@ bool configureGsmSmsMode() {
   return ok;
 }
 
+void wakeGsmModem() {
+  queryAt("AT", 1200);
+  queryAt("ATE0", 1200);
+  queryAt("AT+CSCLK=0", 1500);
+  queryAt("AT+CFUN=1", 5000);
+}
+
 bool ensureGsmReady(bool needVoice) {
   if (!ENABLE_GSM_FEATURES) {
     return false;
@@ -2715,39 +2946,76 @@ bool ensureGsmReady(bool needVoice) {
     Serial.println("[GSM] Cooldown active after AT/SIM failure; skipping modem command");
     return false;
   }
-  if (millis() - lastGsmReconnectAttemptAt < GSM_RETRY_INTERVAL_MS && modemAtOnline) {
-    return needVoice ? voiceServiceReady() : smsServiceReady();
-  }
-
   lastGsmReconnectAttemptAt = millis();
   String at = queryAt("AT", 1200);
   if (at.indexOf("OK") < 0) {
     Serial.println("[MODEM] AT lost, rescanning UART baud");
     if (!connectModemAt()) {
-      gsmNetworkOnline = false;
-      modemAtOnline = false;
-      gsmCooldownUntil = millis() + GSM_POWER_FAULT_COOLDOWN_MS;
-      updateLcdStatus(true);
-      return false;
+      pulseModemPowerKey("AT lost");
+      if (!connectModemAt()) {
+        gsmNetworkOnline = false;
+        modemAtOnline = false;
+        gsmCooldownUntil = millis() + GSM_POWER_FAULT_COOLDOWN_MS;
+        updateLcdStatus(true);
+        return false;
+      }
     }
   } else {
     modemAtOnline = true;
   }
 
+  wakeGsmModem();
   configureGsmSmsMode();
-  queryAt("AT+CFUN=1", 5000);
-  waitForSimReady(5000);
-  bool ready = needVoice ? voiceServiceReady() : smsServiceReady();
-  gsmNetworkOnline = ready || gsmLooksUsable();
-  if (!ready) {
-    Serial.printf("[GSM] %s not ready after reconnect check\n", needVoice ? "Voice" : "SMS");
+  bool simReady = waitForSimReady(5000);
+  if (!simReady) {
+    gsmNetworkOnline = false;
+    Serial.println("[GSM] SIM not ready after reconnect check");
     logGsmDiagnostics();
     gsmCooldownUntil = millis() + GSM_POWER_FAULT_COOLDOWN_MS;
-  } else {
-    gsmCooldownUntil = 0;
+    updateLcdStatus(true);
+    return false;
   }
+
+  gsmNetworkOnline = true;
+  gsmCooldownUntil = 0;
+  gsmFeaturesStarted = true;
+  Serial.printf("[GSM] AT+SIM ready; direct %s allowed without extra network gate\n", needVoice ? "call" : "SMS");
   updateLcdStatus(true);
-  return ready;
+  return true;
+}
+
+void lcdSetBacklight(bool on) {
+  lcdBacklightEnabled = on;
+  if (!on) {
+    lcdBacklightOffAt = 0;
+  }
+  if (lcdReady) {
+    lcdWriteExpander(0);
+  }
+  Serial.printf("[LCD] Backlight %s\n", on ? "ON" : "OFF");
+}
+
+void lcdBacklightForEvent(const char *reason) {
+  if (!lcdReady) {
+    return;
+  }
+  lcdBacklightOffAt = millis() + LCD_EVENT_BACKLIGHT_MS;
+  if (!lcdBacklightEnabled) {
+    lcdSetBacklight(true);
+  }
+  Serial.printf("[LCD] Backlight event=%s duration=%lus\n",
+                reason ? reason : "EVENT",
+                LCD_EVENT_BACKLIGHT_MS / 1000UL);
+  updateLcdStatus(true);
+}
+
+void serviceLcdBacklightTimeout() {
+  if (!lcdReady || !lcdBacklightEnabled || lcdBacklightOffAt == 0) {
+    return;
+  }
+  if (static_cast<long>(millis() - lcdBacklightOffAt) >= 0) {
+    lcdSetBacklight(false);
+  }
 }
 
 bool waitForSimReady(unsigned long totalWaitMs) {
@@ -2782,10 +3050,9 @@ bool waitForGsmNetwork(unsigned long totalWaitMs) {
   return false;
 }
 
-bool sendSmsByAt(const char *number, const String &message) {
-  Serial.printf("[SMS] AT sending to %s\n", number);
-  queryAt("AT+CMGF=1", 1000);
-  queryAt("AT+CSCS=\"GSM\"", 1000);
+bool submitSmsByAt(const char *number, const String &message, const char *routeCommand, String &response) {
+  Serial.printf("[SMS] Route %s\n", routeCommand);
+  queryAt(routeCommand, 2000);
 
   while (SerialAT.available()) {
     SerialAT.read();
@@ -2803,32 +3070,62 @@ bool sendSmsByAt(const char *number, const String &message) {
     if (prompt.indexOf('>') >= 0) {
       break;
     }
-    delay(10);
+    yieldToSystem(10);
   }
 
   if (prompt.indexOf('>') < 0) {
-    Serial.printf("[SMS] No CMGS prompt: %s\n", prompt.c_str());
+    response = prompt;
+    Serial.printf("[SMS] No CMGS prompt: %s\n", response.c_str());
     return false;
   }
 
   SerialAT.print(message);
   SerialAT.write(0x1A);
 
-  String response = readAtResponse(20000);
+  Serial.println("[SMS] Waiting for modem submit result");
+  response = readAtFinalResponse(15000);
   bool ok = response.indexOf("OK") >= 0 || response.indexOf("+CMGS:") >= 0;
   Serial.printf("[SMS] AT result=%s response=%s\n", ok ? "OK" : "FAIL", response.c_str());
   return ok;
 }
 
+bool sendSmsByAt(const char *number, const String &message) {
+  Serial.printf("[SMS] AT sending to %s\n", number);
+  queryAt("AT+CSMS=1", 2000);
+  queryAt("AT+CMGF=1", 1000);
+  queryAt("AT+CSCS=\"GSM\"", 1000);
+  String smsc = queryAt("AT+CSCA?", 2000);
+  String creg = queryAt("AT+CREG?", 2000);
+  String cgreg = queryAt("AT+CGREG?", 2000);
+  Serial.printf("[SMS] SMSC=%s\n", smsc.c_str());
+  Serial.printf("[SMS] CREG=%s CGREG=%s\n", creg.c_str(), cgreg.c_str());
+
+  String response;
+  bool ok = submitSmsByAt(number, message, "AT+CGSMS=2", response);
+  if (!ok && response.indexOf("+CMS ERROR") >= 0) {
+    Serial.println("[SMS] Packet-domain SMS failed; trying circuit-preferred route");
+    ok = submitSmsByAt(number, message, "AT+CGSMS=3", response);
+  }
+  if (!ok) {
+    String ceer = queryAt("AT+CEER", 3000);
+    Serial.printf("[SMS] CEER=%s\n", ceer.c_str());
+  }
+  return ok;
+}
+
 bool callNumberByAt(const char *number, uint32_t durationMs) {
   Serial.printf("[CALL] AT dialing %s\n", number);
+  queryAt("AT+CLIR=0", 2000);
+  queryAt("AT+COLP=1", 2000);
   String command = "ATD";
   command += number;
   command += ";";
-  String response = queryAt(command.c_str(), 8000);
+  String response = queryAt(command.c_str(), 15000);
   bool ok = response.indexOf("OK") >= 0 || response.indexOf("CONNECT") >= 0 || response.length() == 0;
   Serial.printf("[CALL] AT dial result=%s response=%s\n", ok ? "OK" : "FAIL", response.c_str());
   if (!ok) {
+    String ceer = queryAt("AT+CEER", 3000);
+    Serial.printf("[CALL] CEER=%s\n", ceer.c_str());
     return false;
   }
 
@@ -2839,7 +3136,7 @@ bool callNumberByAt(const char *number, uint32_t durationMs) {
       Serial.println("[ALARM] Hanging up due to disarm priority");
       break;
     }
-    delay(20);
+    yieldToSystem(20);
   }
   queryAt("ATH", 3000);
   return true;
@@ -2853,6 +3150,7 @@ void registerDeviceToServer() {
   HTTPClient http;
   http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   http.begin(DEVICE_REGISTER_URL);
+  prepareHttpRequest(http);
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
@@ -2890,10 +3188,12 @@ void reportTriggeredSensorToSystemState(const String &triggeredSensor) {
   HTTPClient http;
   http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   http.begin(SYSTEM_STATE_URL);
+  prepareHttpRequest(http);
   http.addHeader("Content-Type", "application/json");
 
+  String syncUuid = systemStateDeviceUuid();
   String payload = "{";
-  payload += "\"device_uuid\":\"" + jsonEscape(deviceUuid()) + "\",";
+  payload += "\"device_uuid\":\"" + jsonEscape(syncUuid) + "\",";
   payload += "\"state\":\"alarm\",";
   payload += "\"user\":\"HUB\",";
   payload += "\"triggered_sensor\":\"" + jsonEscape(triggeredSensor) + "\",";
@@ -2901,7 +3201,7 @@ void reportTriggeredSensorToSystemState(const String &triggeredSensor) {
   payload += "\"reason\":\"" + jsonEscape(triggeredSensor) + "\"";
   payload += "}";
 
-  Serial.printf("[STATE] POST %s\n", SYSTEM_STATE_URL);
+  Serial.printf("[STATE] POST %s uuid=%s\n", SYSTEM_STATE_URL, syncUuid.c_str());
   Serial.printf("[STATE] Trigger payload: %s\n", payload.c_str());
   int status = http.POST(payload);
   String body = http.getString();
@@ -2940,18 +3240,20 @@ void reportLocalModeToSystemState(SystemMode mode, const char *reason) {
   HTTPClient http;
   http.setTimeout((mode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
   http.begin(SYSTEM_STATE_URL);
+  prepareHttpRequest(http);
   http.addHeader("Content-Type", "application/json");
 
   String safeReason = reason ? String(reason) : "HUB";
+  String syncUuid = systemStateDeviceUuid();
   String payload = "{";
-  payload += "\"device_uuid\":\"" + jsonEscape(deviceUuid()) + "\",";
+  payload += "\"device_uuid\":\"" + jsonEscape(syncUuid) + "\",";
   payload += "\"device_name\":\"" + jsonEscape(deviceName()) + "\",";
   payload += "\"state\":\"" + state + "\",";
   payload += "\"user\":\"" + jsonEscape(safeReason) + "\",";
   payload += "\"reason\":\"" + jsonEscape(safeReason) + "\"";
   payload += "}";
 
-  Serial.printf("[STATE] Sync local mode %s by %s\n", state.c_str(), safeReason.c_str());
+  Serial.printf("[STATE] Sync local mode %s by %s uuid=%s\n", state.c_str(), safeReason.c_str(), syncUuid.c_str());
   int status = http.POST(payload);
   String body = http.getString();
   Serial.printf("[STATE] Local mode sync status=%d body=%s\n", status, body.c_str());
@@ -2981,77 +3283,60 @@ void cooperativeDelay(uint32_t durationMs) {
   }
 }
 
-void sendSMS(const char *number, const String &message) {
+void sendSMS(const char *number, const String &message, bool allowWhenDisarmed = false) {
   if (!ENABLE_GSM_FEATURES) {
     Serial.println("[SMS] GSM disabled, SMS skipped");
     return;
   }
   if (!number || strlen(number) < 10) return;
-  if (alarmCancelled()) return;
+  if (!allowWhenDisarmed && alarmCancelled()) return;
   if (!ensureGsmReady(false)) {
-    Serial.println("[SMS] GSM/SIM/network not ready, SMS not sent");
-    return;
-  }
-  if (!smsServiceReady()) {
-    Serial.println("[SMS] SMS service not ready, SMS not sent");
-    logModemStatus();
-    logGsmDiagnostics();
+    Serial.println("[SMS] GSM AT/SIM not ready, SMS not sent");
     return;
   }
   Serial.printf("[SMS] Sending to %s: %s\n", number, message.c_str());
-  bool ok = modem.sendSMS(number, message);
-  if (!ok) {
-    Serial.println("[SMS] TinyGSM failed, trying direct AT SMS");
-    ok = sendSmsByAt(number, message);
-  }
+  wakeGsmModem();
+  bool ok = sendSmsByAt(number, message);
   Serial.printf("[SMS] Result=%s\n", ok ? "OK" : "FAIL");
   if (!ok) {
+    Serial.println("[SMS] One-shot SMS failed; alarm/app loop continues");
     logModemStatus();
     logGsmDiagnostics();
   }
   cooperativeDelay(500);
 }
 
-void sendSmsToAll(String message) {
+void sendSmsToAll(String message, bool allowWhenDisarmed = false) {
   if (smsNumberCount == 0) {
     Serial.println("[SMS] No numbers available");
     return;
   }
 
   for (uint8_t i = 0; i < smsNumberCount; i++) {
-    sendSMS(smsNumbers[i], message);
+    sendSMS(smsNumbers[i], message, allowWhenDisarmed);
   }
 }
 
-void callNumber(const char *number, uint32_t durationMs = 20000) {
+void callNumber(const char *number, uint32_t durationMs = 20000, bool allowWhenDisarmed = false) {
   if (!ENABLE_GSM_FEATURES) {
     Serial.println("[CALL] GSM disabled, call skipped");
     return;
   }
   if (!number || strlen(number) < 10) return;
-  if (alarmCancelled()) return;
+  if (!allowWhenDisarmed && alarmCancelled()) return;
   if (!ensureGsmReady(true)) {
-    Serial.println("[CALL] GSM/SIM/network not ready, call not started");
-    return;
-  }
-  if (!voiceServiceReady()) {
-    Serial.println("[CALL] Voice service not ready, call not started");
-    logModemStatus();
-    logGsmDiagnostics();
+    Serial.println("[CALL] GSM AT/SIM not ready, call not started");
     return;
   }
   gsmCallActive = true;
   WiFi.setSleep(false);
   Serial.printf("[CALL] Calling %s\n", number);
-  bool ok = modem.callNumber(number);
+  wakeGsmModem();
+  bool ok = callNumberByAt(number, durationMs);
   if (!ok) {
-    Serial.println("[CALL] TinyGSM dial failed, trying direct AT dial");
+    Serial.println("[CALL] Direct AT dial failed; refreshing modem and retrying once");
+    wakeGsmModem();
     ok = callNumberByAt(number, durationMs);
-    if (ok) {
-      cooperativeDelay(1500);
-      gsmCallActive = false;
-      return;
-    }
   }
   Serial.printf("[CALL] Dial result=%s\n", ok ? "OK" : "FAIL");
   if (!ok) {
@@ -3060,18 +3345,6 @@ void callNumber(const char *number, uint32_t durationMs = 20000) {
     gsmCallActive = false;
     return;
   }
-  unsigned long start = millis();
-  while (millis() - start < durationMs) {
-    serviceAlarmPriorityTasks();
-    if (alarmCancelled()) {
-      Serial.println("[ALARM] Hanging up due to disarm priority");
-      modem.callHangup();
-      gsmCallActive = false;
-      return;
-    }
-    delay(20);
-  }
-  modem.callHangup();
   cooperativeDelay(1500);
   gsmCallActive = false;
 }
@@ -3157,7 +3430,8 @@ void serviceSerialGsmCommands() {
   if (command.startsWith("call:")) {
     String number = command.substring(5);
     number.trim();
-    callNumber(number.c_str(), 20000);
+    Serial.printf("[GSM_TEST] Manual call test to %s\n", number.c_str());
+    callNumber(number.c_str(), 20000, true);
     return;
   }
 }
@@ -3189,12 +3463,29 @@ void sendAlert(const String &message, bool allowCall) {
 }
 
 void setMode(SystemMode mode, const char *reason) {
+  if (currentMode == MODE_ALARM && (mode == MODE_ARMED || mode == MODE_STAY_ARM)) {
+    Serial.printf("[STATE] Ignored %s by %s; alarm is latched until DISARM\n",
+                  mode == MODE_ARMED ? "ARMED" : "STAY",
+                  reason ? reason : "");
+    return;
+  }
   SystemMode previousMode = currentMode;
   bool modeChanged = previousMode != mode;
+  if (!modeChanged && (mode == MODE_ARMED || mode == MODE_DISARMED || mode == MODE_STAY_ARM)) {
+    Serial.printf("[STATE] Duplicate %s by %s ignored\n",
+                  mode == MODE_ARMED ? "ARMED" :
+                  mode == MODE_STAY_ARM ? "STAY" : "DISARMED",
+                  reason ? reason : "");
+    return;
+  }
   currentMode = mode;
   updateModeIndicatorLeds();
+  if (modeChanged) {
+    reportLocalModeToSystemState(mode, reason);
+  }
   switch (mode) {
     case MODE_ARMED:
+      lcdBacklightForEvent("ARMED");
       clearPendingAlarm();
       stopExitDelay();
       setAlarmOutputs(false);
@@ -3206,8 +3497,9 @@ void setMode(SystemMode mode, const char *reason) {
       }
       break;
     case MODE_DISARMED: {
+      lcdBacklightForEvent("DISARMED");
       if (ENABLE_GSM_FEATURES && modemAtOnline && reason && strcmp(reason, "BOOT") != 0) {
-        modem.callHangup();
+        queryAt("ATH", 3000);
       } else if (ENABLE_GSM_FEATURES && !modemAtOnline) {
         Serial.println("[MODEM] Hangup skipped; AT offline");
       }
@@ -3226,11 +3518,12 @@ void setMode(SystemMode mode, const char *reason) {
                                   strcmp(reason, "BOOT") != 0 &&
                                   strcmp(reason, "OFFLINE") != 0));
       if (shouldNotify) {
-        sendSmsToAll("SYSTEM DISARMED");
+        sendSmsToAll("SYSTEM DISARMED", true);
       }
       break;
     }
     case MODE_STAY_ARM:
+      lcdBacklightForEvent("STAY_ARM");
       clearPendingAlarm();
       stopExitDelay();
       setAlarmOutputs(false);
@@ -3242,11 +3535,9 @@ void setMode(SystemMode mode, const char *reason) {
       }
       break;
     case MODE_ALARM:
+      lcdBacklightForEvent("ALARM");
       Serial.printf("[STATE] ALARM by %s\n", reason);
       break;
-  }
-  if (modeChanged) {
-    reportLocalModeToSystemState(mode, reason);
   }
 }
 
@@ -3259,6 +3550,7 @@ void triggerAlarm(const String &reason, bool allowCall) {
   modeBeforeAlarm = currentMode;
   currentMode = MODE_ALARM;
   updateModeIndicatorLeds();
+  lcdBacklightForEvent("ALARM");
   alarmEndsAt = settingAlarmDurationMinutes > 0 ? now + (static_cast<unsigned long>(settingAlarmDurationMinutes) * 60000UL) : 0;
   clearPendingAlarm();
   suppressAlarmSound = SUPPRESS_ALARM_SOUND_WHILE_ALERTING;
@@ -3266,6 +3558,7 @@ void triggerAlarm(const String &reason, bool allowCall) {
   Serial.printf("[ALARM] %s\n", reason.c_str());
   sendAlarmEvent("ALARM_START", reason, reason);
   reportTriggeredSensorToSystemState(reason);
+  lastServerState = "alarm";
   sendAlert("ALERT: " + reason, allowCall);
   if (suppressAlarmSound) {
     suppressAlarmSound = false;
@@ -3340,6 +3633,13 @@ void handleServerState(const String &state) {
     return;
   }
 
+  if (currentMode == MODE_ALARM &&
+      (desiredMode == MODE_ARMED || desiredMode == MODE_STAY_ARM)) {
+    lastServerState = state;
+    Serial.printf("[SYNC] Ignoring server %s while alarm is latched; wait for DISARM\n", state.c_str());
+    return;
+  }
+
   Serial.printf("[SYNC] Server state changed to %s\n", state.c_str());
   lastServerState = state;
 
@@ -3380,25 +3680,46 @@ void pollSystemState() {
   }
   lastStatePollAt = now;
 
-  HTTPClient http;
-  http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
-  String url = String(SYSTEM_STATE_URL) + "&device_uuid=" + deviceUuid();
-  http.begin(url);
-  int status = http.GET();
-  if (status == 200) {
-    noteServerOk();
-    String body = http.getString();
-    String state = extractJsonString(body, "state");
-    if (state.length() > 0) {
-      handleServerState(state);
-    } else {
-      Serial.printf("[SYNC] No state in response: %s\n", body.c_str());
-    }
-  } else {
-    Serial.printf("[SYNC] HTTP GET failed status=%d\n", status);
-    noteServerFail("system_state", status);
+  String candidates[2];
+  uint8_t candidateCount = 0;
+  if (settingHubLanguage.length() > 0) {
+    candidates[candidateCount++] = settingHubLanguage;
   }
-  http.end();
+  String baseUuid = deviceUuid();
+  if (candidateCount == 0 || baseUuid != candidates[0]) {
+    candidates[candidateCount++] = baseUuid;
+  }
+
+  bool gotResponse = false;
+  int lastStatus = 0;
+  for (uint8_t i = 0; i < candidateCount; i++) {
+    HTTPClient http;
+    http.setTimeout((currentMode == MODE_DISARMED) ? HTTP_TIMEOUT_DISARMED_MS : HTTP_TIMEOUT_ARMED_MS);
+    String url = String(SYSTEM_STATE_URL) + "&device_uuid=" + urlEncode(candidates[i]) + "&source=hub";
+    http.begin(url);
+    prepareHttpRequest(http);
+    int status = http.GET();
+    lastStatus = status;
+    if (status == 200) {
+      noteServerOk();
+      gotResponse = true;
+      String body = http.getString();
+      String state = extractJsonString(body, "state");
+      if (state.length() > 0) {
+        Serial.printf("[SYNC] State uuid=%s state=%s\n", candidates[i].c_str(), state.c_str());
+        handleServerState(state);
+        http.end();
+        return;
+      }
+      Serial.printf("[SYNC] No state for uuid=%s response=%s\n", candidates[i].c_str(), body.c_str());
+    }
+    http.end();
+  }
+
+  if (!gotResponse) {
+    Serial.printf("[SYNC] HTTP GET failed status=%d\n", lastStatus);
+    noteServerFail("system_state", lastStatus);
+  }
 }
 
 void connectWiFi() {
@@ -3408,22 +3729,29 @@ void connectWiFi() {
     return;
   }
 
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("[WIFI] Already connected IP=%s RSSI=%d\n",
+                  WiFi.localIP().toString().c_str(),
+                  WiFi.RSSI());
+    setOfflineMode(false, "wifi_connected");
+    return;
+  }
+
   lastWiFiAttemptAt = millis();
   Serial.printf("[WIFI] Connecting to %s\n", provisionedSsid.c_str());
+  if (bleProvisioningActive) {
+    Serial.println("[WIFI] Stopping BLE before normal WiFi.begin");
+    stopBleProvisioning();
+    delay(300);
+  }
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
-  WiFi.setHostname(BLE_DEVICE_NAME);
-  WiFi.setSleep(bleProvisioningActive);
-  if (bleProvisioningActive) {
-    Serial.println("[WIFI] BLE active; WiFi modem sleep kept ON for coexistence");
-  }
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  WiFi.setAutoReconnect(WIFI_AUTO_RECONNECT);
-  WiFi.disconnect(false, true);
-  delay(300);
-  pauseBleAdvertisingForWifiConnect();
-  bool ssidVisible = scanForProvisionedSsid();
-  Serial.println("[WIFI] Connecting SSID-only (router/AP decides BSSID)");
+  WiFi.disconnect(false, false);
+  delay(250);
+  Serial.println("[WIFI] Stable connect: STA, sleep OFF, TX max, fresh WiFi.begin");
   WiFi.begin(provisionedSsid.c_str(), provisionedPassword.c_str());
 
   unsigned long start = millis();
@@ -3456,7 +3784,7 @@ void connectWiFi() {
     Serial.println("[WIFI] Server register/settings scheduled after boot");
   } else {
     wl_status_t status = WiFi.status();
-    const char *reason = ssidVisible ? wifiStatusText(status) : "SSID_NOT_FOUND";
+    const char *reason = wifiStatusText(status);
     if (lastWifiDisconnectReason != 0 && millis() - lastWifiDisconnectAt < WIFI_CONNECT_TIMEOUT_MS + 5000) {
       reason = wifiDisconnectReasonText(lastWifiDisconnectReason);
     }
@@ -3483,14 +3811,17 @@ void servicePendingWifiConnectAfterBleConfig() {
     return;
   }
   pendingWifiConnectAfterBleConfig = false;
-  Serial.println("[BLE] WiFi config notify window complete; starting WiFi");
+  Serial.println("[BLE] WiFi config notify window complete; stopping BLE before WiFi connect");
+  stopBleProvisioning();
+  delay(300);
+  Serial.println("[WIFI] Starting WiFi after BLE stopped");
   connectWiFi();
 }
 
 void pulseModemPowerKey(const char *reason) {
   if (MODEM_PWRKEY_PIN < 0) {
-    Serial.println("[MODEM] PWRKEY GPIO not configured; hardware restart skipped");
-    Serial.println("[MODEM] Wire A7670C PWRKEY/RESET to ESP32 GPIO, then set MODEM_PWRKEY_PIN");
+    Serial.println("[MODEM] PWRKEY not available on this A7670C breakout; hardware restart skipped");
+    Serial.println("[MODEM] Power/reset the GSM board externally, or wire RESET to an ESP32 GPIO if needed");
     return;
   }
 
@@ -3501,7 +3832,7 @@ void pulseModemPowerKey(const char *reason) {
   digitalWrite(MODEM_PWRKEY_PIN, MODEM_PWRKEY_ON_STATE);
   delay(MODEM_PWRKEY_PULSE_MS);
   digitalWrite(MODEM_PWRKEY_PIN, MODEM_PWRKEY_ON_STATE == LOW ? HIGH : LOW);
-  delay(5000);
+  delay(MODEM_BOOT_SETTLE_MS);
 }
 
 void initModem() {
@@ -3514,7 +3845,7 @@ void initModem() {
   delay(150);
   SerialAT.setRxBufferSize(1024);
   SerialAT.begin(MODEM_BAUD, SERIAL_8N1, MODEM_RX, MODEM_TX);
-  delay(3000);
+  delay(1000);
 
   auto waitForAtOk = [&](unsigned long totalWaitMs) -> bool {
     Serial.println("[MODEM] Waiting for AT");
@@ -3543,13 +3874,13 @@ void initModem() {
   }
 
   if (!modemReady) {
-    if (waitForAtOk(20000)) {
+    if (waitForAtOk(5000)) {
       modemReady = true;
       modemAtOnline = true;
       Serial.println("[MODEM] AT responded OK, continuing without restart");
     } else {
       pulseModemPowerKey("AT not responding");
-      if (waitForAtOk(12000)) {
+      if (waitForAtOk(3000)) {
         modemReady = true;
         modemAtOnline = true;
         Serial.println("[MODEM] AT OK after PWRKEY pulse");
@@ -3559,8 +3890,10 @@ void initModem() {
 
   if (!modemReady) {
       gsmNetworkOnline = false;
+      gsmCooldownUntil = millis() + GSM_POWER_FAULT_COOLDOWN_MS;
       updateLcdStatus(true);
       Serial.println("[MODEM] AT not responding cleanly");
+      Serial.println("[MODEM] GSM soft-failed; retry paused for 120 seconds so app/alarm continues");
       Serial.println("[MODEM] Check A7670C power, GND common, ESP32 TX->GSM RX, ESP32 RX<-GSM TX, and level shifting");
       return;
   }
@@ -3607,16 +3940,37 @@ void initModem() {
 void handleRfCode(uint32_t code) {
   if (rfPairingActive) {
     Serial.printf("[RF] Pairing capture code=%lu type=%s\n", static_cast<unsigned long>(code), rfPairType.c_str());
+    long capturedPairingId = rfPairingId.length() ? rfPairingId.toInt() : -1;
     if (storeLearnedRfItem(code, rfPairType, rfPairName, rfPairZone, rfPairRemoteMode)) {
       updateServerPairingStatus("paired", code);
       sendPairingNotify("paired", code);
+      recentlyPairedRfCode = code;
+      recentlyPairedRfIgnoreUntil = millis() + 2500UL;
+      if (lcdReady) {
+        lcdPrintLine(0, "RF SAVED");
+        lcdPrintLine(1, "CODE: " + String(code));
+        lcdPrintLine(2, "TYPE: " + String(rfTypeToString(resolvePairingRfType(rfPairType, rfPairRemoteMode, rfPairZone, rfPairName))));
+        lcdPrintLine(3, "APP SAVE OK");
+      }
     } else {
       updateServerPairingStatus("failed", code);
       sendPairingNotify("pair_save_failed", code);
     }
+    if (capturedPairingId >= 0) {
+      locallyCompletedPairingRequestId = capturedPairingId;
+      locallyCompletedPairingIgnoreUntil = millis() + 300000UL;
+    }
     clearRfPairingRequest();
     scheduleBleStopAfterPairing();
     return;
+  }
+
+  if (recentlyPairedRfCode == code && millis() < recentlyPairedRfIgnoreUntil) {
+    Serial.printf("[RF] Ignoring freshly paired repeat code=%lu\n", static_cast<unsigned long>(code));
+    return;
+  }
+  if (millis() >= recentlyPairedRfIgnoreUntil) {
+    recentlyPairedRfCode = 0;
   }
 
   int learnedIndex = findLearnedRfIndex(code);
@@ -3682,6 +4036,10 @@ void handleRfCode(uint32_t code) {
         return;
     }
   }
+
+  Serial.printf("[RF] Unlearned code ignored=%lu%s\n",
+                static_cast<unsigned long>(code),
+                isArmedLikeMode(currentMode) ? " (pair this sensor first)" : "");
 }
 
 void pollRf() {
@@ -3749,10 +4107,10 @@ void updateTimedAlarmState() {
     }
   }
   if (currentMode == MODE_ALARM && alarmEndsAt > 0 && now >= alarmEndsAt) {
-    Serial.println("[ALARM] Alarm duration expired");
-    SystemMode restoreMode = (modeBeforeAlarm == MODE_STAY_ARM) ? MODE_STAY_ARM : MODE_ARMED;
-    setMode(restoreMode, "ALARM TIMEOUT");
+    Serial.println("[ALARM] Alarm duration reached. Siren OFF, but system stays in ALARM until disarmed.");
     alarmEndsAt = 0;
+    setAlarmOutputs(false);
+    sendAlarmEvent("ALARM_SIREN_STOP", "SYSTEM", "Alarm duration expired, siren stopped.");
   }
 }
 
@@ -3927,6 +4285,9 @@ void startGsmFeatures() {
 }
 
 void reconnectWiFiIfDue() {
+  if (pendingWifiConnectAfterBleConfig || bleProvisioningActive) {
+    return;
+  }
   unsigned long wifiRetryMs = offlineMode ? WIFI_RETRY_OFFLINE_MS : WIFI_RETRY_ONLINE_MS;
   if (WIFI_AUTO_RECONNECT &&
       WiFi.status() != WL_CONNECTED &&
@@ -3956,6 +4317,13 @@ void serviceInitialServerSync() {
 
   pendingInitialServerSync = false;
   Serial.println("[WIFI] Running delayed server register/settings sync");
+  servicePendingServerFactoryResetCleanup();
+  if (pendingServerFactoryResetCleanup) {
+    pendingInitialServerSync = true;
+    pendingInitialServerSyncAt = millis() + 10000;
+    Serial.println("[FW_RESET] Register/settings sync postponed until server cleanup succeeds");
+    return;
+  }
   registerDeviceToServer();
   fetchSettingsFromServer();
 }
@@ -4014,5 +4382,6 @@ void loop() {
   updateAlarmBuzzer();
   logOutputPinStates();
   updateLcdStatus();
+  serviceLcdBacklightTimeout();
   delay(50);
 }

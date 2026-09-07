@@ -82,12 +82,17 @@ class AlarmNotification {
     // ── Online path ──────────────────────────────────────────────
     bool onlineOk = false;
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getInt('auth_user_id');
+      final uri = Uri.parse('https://monsow.in/alarm/index.php').replace(
+        queryParameters: {
+          'action': 'get_alarm_status',
+          'device_uuid': deviceUuid,
+          if (userId != null && userId > 0) 'user_id': userId.toString(),
+        },
+      );
       final res = await http
-          .get(Uri.parse(
-        'https://monsow.in/alarm/index.php'
-            '?action=get_alarm_status'
-            '&device_uuid=$deviceUuid',
-      ))
+          .get(uri)
           .timeout(const Duration(seconds: 8));
 
       if (res.statusCode == 200) {
@@ -200,7 +205,7 @@ class AlarmNotification {
             final zone    = (first['zone'] ?? '').toString();
             final name    = (first['name'] ?? '').toString();
             final type    = (first['type'] ?? 'sensor').toString();
-            final display = zone.isNotEmpty ? zone : name;
+            final display = name.isNotEmpty ? name : zone;
             title = '🚨 ALARM! ${_cleanZone(display)}';
             body  = '${_typeLabel(type, display)} — open the app immediately!';
           }

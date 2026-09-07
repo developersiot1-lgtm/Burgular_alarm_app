@@ -199,6 +199,21 @@ class AlarmSystemProvider with ChangeNotifier {
     return _deviceUuid ?? '';
   }
 
+  List<String> get _stateSyncDeviceUuids {
+    final settings = SettingsManager();
+    final seen = <String>{};
+    final values = <String>[
+      _hubDeviceUuid ?? '',
+      settings.connectedDeviceUuid,
+      settings.hubLanguage,
+      _deviceUuid ?? '',
+    ];
+    return values
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty && seen.add(value))
+        .toList();
+  }
+
   // ── Initialize ────────────────────────────────────────────────
   Future<void> initialize(ApiService apiService,
       {required String deviceUuid, String? hubDeviceUuid}) async {
@@ -621,12 +636,30 @@ class AlarmSystemProvider with ChangeNotifier {
 
       // ✅ Network call with short timeout — runs async, won't block UI
       try {
-        await _apiService!.updateSystemState(
-          stateString,
-          deviceUuid: _hubDeviceUuid ?? _deviceUuid ?? 'legacy',
-          user:
-              AuthService().userName ?? AuthService().userEmail ?? 'Mobile App',
-        );
+        final targets = _stateSyncDeviceUuids;
+        if (targets.isEmpty) {
+          throw Exception('No connected hub UUID found');
+        }
+        Exception? lastError;
+        var successCount = 0;
+        for (final targetUuid in targets) {
+          try {
+            await _apiService!.updateSystemState(
+              stateString,
+              deviceUuid: targetUuid,
+              user: AuthService().userName ??
+                  AuthService().userEmail ??
+                  'Mobile App',
+            );
+            successCount++;
+          } catch (e) {
+            lastError = e is Exception ? e : Exception(e.toString());
+            debugPrint('State update failed for $targetUuid: $e');
+          }
+        }
+        if (successCount == 0) {
+          throw lastError ?? Exception('Failed to update hub state');
+        }
       } catch (e) {
         debugPrint('⚠️ Server update failed (queued): $e');
         RealtimeSyncService().suppressNextTick = false;

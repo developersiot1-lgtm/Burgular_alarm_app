@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+import 'auth_service.dart';
 
 class ApiService {
   static const String baseUrl = 'https://monsow.in/alarm/index.php';
@@ -299,12 +300,17 @@ class ApiService {
   /// Get system state
   Future<Map<String, dynamic>?> getSystemState({String? hubDeviceUuid}) async {
     try {
+      final userId = AuthService().userId;
       // Build URL: if we have a hubDeviceUuid, pass it so the server
       // returns the state row for THAT device only.
-      final uri = hubDeviceUuid != null && hubDeviceUuid.isNotEmpty
-          ? Uri.parse(
-              '$baseUrl?action=system_state&device_uuid=${Uri.encodeComponent(hubDeviceUuid)}')
-          : Uri.parse('$baseUrl?action=system_state');
+      final params = <String, String>{'action': 'system_state'};
+      if (hubDeviceUuid != null && hubDeviceUuid.isNotEmpty) {
+        params['device_uuid'] = hubDeviceUuid;
+      }
+      if (userId != null) {
+        params['user_id'] = userId.toString();
+      }
+      final uri = Uri.parse(baseUrl).replace(queryParameters: params);
 
       final response = await http.get(uri).timeout(Duration(seconds: 10));
 
@@ -332,6 +338,7 @@ class ApiService {
             body: json.encode({
               'state': state,
               'user': user ?? 'Mobile App',
+              if (AuthService().userId != null) 'user_id': AuthService().userId,
               'device_uuid': deviceUuid,
             }),
           )
@@ -359,9 +366,14 @@ class ApiService {
   /// Get devices
   Future<List<dynamic>> getDevices() async {
     try {
+      final userId = AuthService().userId;
+      final uri = Uri.parse(baseUrl).replace(queryParameters: {
+        'action': 'devices',
+        if (userId != null) 'user_id': userId.toString(),
+      });
       final response = await http
           .get(
-            Uri.parse('$baseUrl?action=devices'),
+            uri,
           )
           .timeout(Duration(seconds: 10));
 
@@ -516,7 +528,7 @@ class ApiService {
       final response = await http
           .get(
             Uri.parse(
-                '$baseUrl?action=sync_settings_to_device&device_uuid=$deviceUuid'),
+                '$baseUrl?action=sync_settings_to_device&device_uuid=${Uri.encodeComponent(deviceUuid)}'),
           )
           .timeout(Duration(seconds: 10));
 
@@ -539,7 +551,8 @@ class ApiService {
     try {
       final response = await http
           .get(
-            Uri.parse('$baseUrl?action=get_schedules&device_uuid=$deviceUuid'),
+            Uri.parse(
+                '$baseUrl?action=get_schedules&device_uuid=${Uri.encodeComponent(deviceUuid)}'),
           )
           .timeout(Duration(seconds: 10));
 
@@ -852,8 +865,9 @@ class ApiService {
   Future<List<dynamic>> accessoryList(String hubDeviceUuid,
       {String? type}) async {
     try {
-      var url = '$baseUrl?action=accessory_list&hub_device_uuid=$hubDeviceUuid';
-      if (type != null) url += '&type=$type';
+      var url =
+          '$baseUrl?action=accessory_list&hub_device_uuid=${Uri.encodeComponent(hubDeviceUuid)}';
+      if (type != null) url += '&type=${Uri.encodeComponent(type)}';
 
       final response =
           await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
@@ -1011,10 +1025,16 @@ class ApiService {
 
   Future<Map<String, dynamic>?> getAlarmStatus(String deviceUuid) async {
     try {
+      final userId = AuthService().userId;
+      final uri = Uri.parse(baseUrl).replace(queryParameters: {
+        'action': 'get_alarm_status',
+        'device_uuid': deviceUuid,
+        'include_devices': 'true',
+        if (userId != null) 'user_id': userId.toString(),
+      });
       final response = await http
           .get(
-            Uri.parse(
-                '$baseUrl?action=get_alarm_status&device_uuid=$deviceUuid&include_devices=true'),
+            uri,
           )
           .timeout(const Duration(seconds: 8));
 

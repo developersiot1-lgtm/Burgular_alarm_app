@@ -119,11 +119,11 @@ class SettingsManager {
   // Keys must exactly match PHP $setting_keys in saveSettings()
   // ============================================================================
 
-  int get exitDelay => _prefs?.getInt('exit_delay') ?? 70;
+  int get exitDelay => _prefs?.getInt('exit_delay') ?? 0;
   Future<void> setExitDelay(int value) async =>
       _prefs?.setInt('exit_delay', value);
 
-  int get entryDelay => _prefs?.getInt('entry_delay') ?? 60;
+  int get entryDelay => _prefs?.getInt('entry_delay') ?? 0;
   Future<void> setEntryDelay(int value) async =>
       _prefs?.setInt('entry_delay', value);
 

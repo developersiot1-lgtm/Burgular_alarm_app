@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ================================================================
 // realtime_sync_service.dart
@@ -117,8 +118,15 @@ class RealtimeSyncService {
     _isPolling = true;
 
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final userId = prefs.getInt('auth_user_id');
+      final uri = Uri.parse(_baseUrl).replace(queryParameters: {
+        'action': 'system_state',
+        'device_uuid': _deviceUuid,
+        if (userId != null && userId > 0) 'user_id': userId.toString(),
+      });
       final res = await http
-          .get(Uri.parse('$_baseUrl&device_uuid=${Uri.encodeComponent(_deviceUuid)}'))
+          .get(uri)
           .timeout(const Duration(seconds: 6));
 
       if (res.statusCode != 200) return;
